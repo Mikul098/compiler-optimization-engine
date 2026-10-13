@@ -1,0 +1,13 @@
+// ==============================================================================
+// File: tests/test3_syntax_error.toy
+// Purpose: Negative test verifying compiler syntax error detection and reporting.
+//
+// What it Tests:
+//  - Intentionally invalid syntax: consecutive binary operators ('+ *') and
+//    a missing terminating semicolon.
+//  - Confirms that Bison's yyerror() triggers with an accurate line number.
+//  - Confirms that the compiler exits gracefully with code 1 without crashing.
+// ==============================================================================
+
+a = 2 + * 3;
+print(a)

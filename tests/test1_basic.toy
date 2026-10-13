@@ -1,0 +1,16 @@
+// ==============================================================================
+// File: tests/test1_basic.toy
+// Purpose: Basic sanity test verifying fundamental compiler features.
+//
+// What it Tests:
+//  - Variable declaration and numeric assignment statements (a = 10; b = 20;).
+//  - Simple binary arithmetic addition (c = a + b;).
+//  - Console print statements (print(a); print(c);).
+//  - Verifies baseline lexing, AST construction, and basic TAC emission.
+// ==============================================================================
+
+a = 10;
+b = 20;
+print(a);
+c = a + b;
+print(c);

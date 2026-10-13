@@ -1,0 +1,19 @@
+// ==============================================================================
+// File: tests/test5_subexpressions.toy
+// Purpose: Common subexpression test for TAC generation and future optimizations.
+//
+// What it Tests:
+//  - Repeated identical subexpressions: 'b * c' evaluated multiple times.
+//  - Validates baseline unoptimized TAC generation:
+//      t1 = b * c
+//      a = t1
+//      t2 = b * c
+//      t3 = a + t2
+//      d = t3
+//  - Provides the baseline test case for Common Subexpression Elimination (CSE).
+// ==============================================================================
+
+// Code with obvious common subexpressions (prep for Week 5)
+a = b * c;
+d = a + b * c;
+print(d);

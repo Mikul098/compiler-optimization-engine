@@ -1,0 +1,21 @@
+// ==============================================================================
+// File: tests/test4_complex_tac.toy
+// Purpose: Test deeply nested expressions and Three-Address Code (TAC) flattening.
+//
+// What it Tests:
+//  - Deeply nested arithmetic formula: p * (1 + (r / 100) * t)
+//  - Validates post-order AST traversal to emit linear temporary variables:
+//      t1 = r / 100
+//      t2 = t1 * t
+//      t3 = 1 + t2
+//      t4 = p * t3
+//      temp_calc = t4
+//  - Verifies that complex expression trees flatten into sequential instructions.
+// ==============================================================================
+
+// Calculate compound interest variables (mock formula)
+p = 1000;
+r = 5;
+t = 10;
+temp_calc = p * (1 + (r / 100) * t);
+print(temp_calc);

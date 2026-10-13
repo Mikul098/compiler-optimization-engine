@@ -1,0 +1,12 @@
+# Compiled binaries
+bin/
+build/
+*.o
+*.out
+*.exe
+
+# Auto-generated Flex and Bison files (these are built by Make)
+src/lexer.yy.cpp
+src/parser.tab.cpp
+src/parser.tab.hpp
+src/parser.tab.h

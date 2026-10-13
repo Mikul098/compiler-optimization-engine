@@ -1,0 +1,16 @@
+// ==============================================================================
+// File: tests/test2_precedence.toy
+// Purpose: Test operator precedence and parenthetical expression grouping.
+//
+// What it Tests:
+//  - Verifies that multiplication takes precedence over addition:
+//    '2 + 3 * 4' parses as '2 + (3 * 4)' instead of '(2 + 3) * 4'.
+//  - Verifies that parentheses override precedence:
+//    '(2 + 3) * 4' parses the addition subtree first.
+//  - Validates that AST hierarchy and TAC execution order strictly follow PEMDAS.
+// ==============================================================================
+
+a = 2 + 3 * 4;
+b = (2 + 3) * 4;
+print(a);
+print(b);
