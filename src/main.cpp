@@ -20,6 +20,7 @@
 #include <cstdio>
 #include "ast.h"
 #include "tac.h"
+#include "optimizer.h"
 
 extern int yyparse();
 extern FILE* yyin;
@@ -69,6 +70,20 @@ int main(int argc, char** argv) {
             root->generateTAC(builder);
             std::cout << "=== THREE-ADDRESS CODE ===" << std::endl;
             builder.printAll();
+
+            ConstantFoldingPass folder;
+            folder.optimize(builder.getInstructions());
+            std::cout << "\n=== AFTER CONSTANT FOLDING ===\n";
+            for (const auto& instr : builder.getInstructions()) {
+                std::cout << instr.toString() << "\n";
+            }
+
+            DeadCodeEliminationPass dce;
+            dce.optimize(builder.getInstructions());
+            std::cout << "\n=== AFTER DEAD CODE ELIMINATION ===\n";
+            for (const auto& instr : builder.getInstructions()) {
+                std::cout << instr.toString() << "\n";
+            }
         }
     } else {
         std::cerr << "Parse failed!" << std::endl;

@@ -43,4 +43,5 @@ public:
     void emit(OpCode op, std::string arg1, std::string arg2, std::string result);
     void printAll() const;
     const std::vector<TACInstruction>& getInstructions() const { return instructions; }
+    std::vector<TACInstruction>& getInstructions() { return instructions; }
 };

@@ -1,0 +1,6 @@
+// Code with orphaned variables and math that gets folded
+x = 100;        // Used later
+y = 200;        // Never used (Dead Code)
+z = 5 * 10;     // Folds to 50, but never printed (Dead Code)
+final = x + 50; 
+print final;

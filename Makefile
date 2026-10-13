@@ -25,7 +25,7 @@ PARSER_CPP = $(SRC_DIR)/parser.tab.cpp
 PARSER_HPP = $(SRC_DIR)/parser.tab.hpp
 LEXER_CPP = $(SRC_DIR)/lexer.yy.cpp
 
-SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(PARSER_CPP) $(LEXER_CPP)
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(SRC_DIR)/optimizer.cpp $(PARSER_CPP) $(LEXER_CPP)
 OBJS = $(SRCS:.cpp=.o)
 
 TARGET = $(BIN_DIR)/compiler
@@ -71,3 +71,11 @@ test: all
 	@echo ""
 	@echo "=== Running Test 5: Subexpressions ==="
 	-$(TARGET_BIN) tests/test5_subexpressions.toy
+	@echo ""
+	@echo "=== Running Test 6: Constant Folding ==="
+	-$(TARGET_BIN) tests/test6_const_fold.toy
+	@echo ""
+	@echo "=== Running Test 7: Dead Code Elimination ==="
+	-$(TARGET_BIN) tests/test7_dce.toy
+
+

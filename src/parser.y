@@ -66,8 +66,8 @@ stmt:
         $$ = new AssignmentNode(*$1, std::unique_ptr<ExpressionNode>($3));
         delete $1; // Free the string pointer allocated by flex
     }
-    | PRINT LPAREN expr RPAREN SEMI {
-        $$ = new PrintNode(std::unique_ptr<ExpressionNode>($3));
+    | PRINT expr SEMI {
+        $$ = new PrintNode(std::unique_ptr<ExpressionNode>($2));
     }
     ;
 
