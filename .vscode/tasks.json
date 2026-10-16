@@ -1,0 +1,32 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Compiler",
+            "type": "shell",
+            "command": ".\\run.ps1 -BuildOnly",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Run All Tests",
+            "type": "shell",
+            "command": ".\\run.ps1",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Active File in Compiler",
+            "type": "shell",
+            "command": ".\\run.ps1 ${file}",
+            "group": "test",
+            "problemMatcher": []
+        }
+    ]
+}
