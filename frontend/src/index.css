@@ -640,6 +640,32 @@ code, pre, .font-mono {
   resize: vertical;
 }
 
+.syntax-error-banner {
+  background: var(--color-red-bg);
+  border: 1px solid var(--color-red-border);
+  border-radius: 6px;
+  padding: 16px 20px;
+  margin-top: 14px;
+}
+
+.error-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-red);
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.error-list {
+  padding-left: 20px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-red);
+}
+
 .workbench-footer {
   display: flex;
   justify-content: space-between;

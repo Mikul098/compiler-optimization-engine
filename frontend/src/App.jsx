@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Moon, Sun, Printer, Play, CheckCircle2, Layers, Cpu, GitCompare, ShieldCheck, BarChart3, FileCode } from 'lucide-react';
+import { Moon, Sun, Printer, Play, CheckCircle2, Layers, Cpu, GitCompare, ShieldCheck, BarChart3, FileCode, AlertTriangle } from 'lucide-react';
 import { TEST_SUITES } from './data/testSuites';
 import { runFullPipeline } from './services/compilerEngine';
 import ExecutiveArchitecture from './components/ExecutiveArchitecture';
@@ -180,6 +180,24 @@ export default function App() {
             onLoadSuite={handleLoadSuite}
             selectedSuiteId={selectedSuiteId}
           />
+          {pipelineData?.success === false && (
+            <div className="syntax-error-banner">
+              <div className="error-banner-header">
+                <AlertTriangle size={18} />
+                <span>PARSER SYNTAX DIAGNOSTIC</span>
+              </div>
+              <ul className="error-list">
+                {pipelineData.errors?.map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+              </ul>
+              {pipelineData.nativeStdout && (
+                <pre className="error-native-stdout" style={{ marginTop: '8px', fontSize: '12px', color: 'var(--color-red)' }}>
+                  {pipelineData.nativeStdout}
+                </pre>
+              )}
+            </div>
+          )}
         </section>
       )}
 
