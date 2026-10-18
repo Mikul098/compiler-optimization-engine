@@ -13,6 +13,7 @@
 
 #include <vector>
 #include <string>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <stdexcept>
@@ -32,6 +33,23 @@ public:
 class DeadCodeEliminationPass : public OptimizerPass {
 public:
     void optimize(std::vector<TACInstruction>& instructions) override;
+};
+
+class CommonSubexpressionPass : public OptimizerPass {
+private:
+    std::string getExpressionSignature(OpCode op, const std::string& arg1, const std::string& arg2);
+
+public:
+    void optimize(std::vector<TACInstruction>& instructions) override;
+};
+
+class PassManager {
+private:
+    std::vector<std::unique_ptr<OptimizerPass>> passes;
+
+public:
+    void addPass(std::unique_ptr<OptimizerPass> pass);
+    void optimize(std::vector<TACInstruction>& instructions);
 };
 
 bool isNumber(const std::string& str);

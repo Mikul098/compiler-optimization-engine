@@ -1,0 +1,19 @@
+// 1. Math that should be Constant Folded
+base = 10;
+multiplier = 5;
+fixed_val = base * multiplier; 
+
+// 2. Common Subexpressions
+a = 100;
+b = 200;
+c = a + b;
+d = a + b;     // CSE should catch this
+
+// 3. Dead Code (Calculated but never printed)
+ghost_var = fixed_val * c;
+
+// 4. Final complex math combining everything
+final_answer = fixed_val + d;
+
+// 5. Output
+print final_answer;

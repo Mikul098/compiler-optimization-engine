@@ -14,7 +14,7 @@
 # ==============================================================================
 
 CXX ?= g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -Isrc
+CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -Isrc -I.
 BISON = bison
 FLEX = flex
 
@@ -25,7 +25,7 @@ PARSER_CPP = $(SRC_DIR)/parser.tab.cpp
 PARSER_HPP = $(SRC_DIR)/parser.tab.hpp
 LEXER_CPP = $(SRC_DIR)/lexer.yy.cpp
 
-SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(SRC_DIR)/optimizer.cpp $(PARSER_CPP) $(LEXER_CPP)
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(SRC_DIR)/optimizer.cpp $(SRC_DIR)/diff.cpp $(SRC_DIR)/interpreter.cpp $(PARSER_CPP) $(LEXER_CPP)
 OBJS = $(SRCS:.cpp=.o)
 
 TARGET = $(BIN_DIR)/compiler
@@ -77,5 +77,19 @@ test: all
 	@echo ""
 	@echo "=== Running Test 7: Dead Code Elimination ==="
 	-$(TARGET_BIN) tests/test7_dce.toy
+	@echo ""
+	@echo "=== Running Test 8: Common Subexpression Elimination ==="
+	-$(TARGET_BIN) tests/test8_cse.toy
+	@echo ""
+	@echo "=== Running Test 9: Cascading Fixed-Point Optimization ==="
+	-$(TARGET_BIN) tests/test9_cascade.toy
+	@echo ""
+	@echo "=== Running Test 10: Master Optimization Suite ==="
+	-$(TARGET_BIN) tests/test10_master.toy
+	@echo ""
+	@echo "=== Running Test 11: Final Boss Evaluation Suite ==="
+	-$(TARGET_BIN) tests/test11_final_boss.toy
+
+
 
 

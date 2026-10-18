@@ -26,13 +26,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Auto-configure MSYS2 MinGW & Bison/Flex in PATH if not already present
-$MsysPaths = @("C:\msys64\ucrt64\bin", "C:\msys64\usr\bin", "C:\msys64\mingw64\bin")
-foreach ($p in $MsysPaths) {
-    if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) {
-        $env:PATH = "$p;$env:PATH"
-    }
-}
+# Ensure MSYS2 UCRT64 (MinGW) takes precedence over usr/bin (MSYS posix)
+$cleanPath = ($env:PATH -split ';' | Where-Object { $_ -notlike '*msys64*' }) -join ';'
+$env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;$cleanPath"
 
 if ($Clean) {
     Write-Host "[Clean] Removing build artifacts..." -ForegroundColor Yellow

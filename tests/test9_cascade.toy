@@ -1,0 +1,7 @@
+// This requires at least two full loops to completely optimize.
+a = 10;
+b = 20;
+c = a * b;      // Folds to 200 on Loop 1
+d = c + 50;     // 'c' propagates to 200, folds to 250 on Loop 2
+e = d * 2;      // 'd' propagates to 250, folds to 500 on Loop 3
+print e;

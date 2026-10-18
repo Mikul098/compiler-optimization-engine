@@ -1,0 +1,11 @@
+// Master test to trigger all three optimizations simultaneously
+pi = 3;
+radius = 10;
+r_squared = radius * radius;
+area1 = pi * r_squared;
+
+// Redundant math and dead code
+area2 = pi * (radius * radius); 
+dead_var = area1 + area2;
+
+print area1;

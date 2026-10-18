@@ -21,6 +21,8 @@
 #include "ast.h"
 #include "tac.h"
 #include "optimizer.h"
+#include "diff.h"
+#include "interpreter.h"
 
 extern int yyparse();
 extern FILE* yyin;
@@ -68,21 +70,35 @@ int main(int argc, char** argv) {
 
             TACBuilder builder;
             root->generateTAC(builder);
-            std::cout << "=== THREE-ADDRESS CODE ===" << std::endl;
-            builder.printAll();
 
-            ConstantFoldingPass folder;
-            folder.optimize(builder.getInstructions());
-            std::cout << "\n=== AFTER CONSTANT FOLDING ===\n";
-            for (const auto& instr : builder.getInstructions()) {
-                std::cout << instr.toString() << "\n";
-            }
+            std::vector<TACInstruction> initialTAC = builder.getInstructions();
 
-            DeadCodeEliminationPass dce;
-            dce.optimize(builder.getInstructions());
-            std::cout << "\n=== AFTER DEAD CODE ELIMINATION ===\n";
-            for (const auto& instr : builder.getInstructions()) {
-                std::cout << instr.toString() << "\n";
+            PassManager manager;
+            manager.addPass(std::make_unique<ConstantFoldingPass>());
+            manager.addPass(std::make_unique<CommonSubexpressionPass>());
+            manager.addPass(std::make_unique<DeadCodeEliminationPass>());
+
+            manager.optimize(builder.getInstructions());
+
+            DiffEngine diff;
+            diff.setBefore(initialTAC);
+            diff.setAfter(builder.getInstructions());
+
+            diff.printSideBySide();
+            diff.printMetrics();
+
+            std::cout << "\n=== SEMANTIC VERIFICATION ===\n";
+            Interpreter vm;
+            std::vector<int> unoptimizedOutput = vm.execute(initialTAC);
+            std::vector<int> optimizedOutput = vm.execute(builder.getInstructions());
+
+            if (unoptimizedOutput == optimizedOutput) {
+                std::cout << "\033[32m[PASS] Optimized code produces identical output.\033[0m\n";
+                for (int val : optimizedOutput) {
+                    std::cout << "Program Output: " << val << "\n";
+                }
+            } else {
+                std::cout << "\033[31m[FAIL] Semantic mismatch detected! Optimization broke the logic.\033[0m\n";
             }
         }
     } else {
