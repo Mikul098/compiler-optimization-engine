@@ -88,21 +88,6 @@ export default function App() {
         <p className="dossier-hero-subtitle">
           A Rigorous Multi-Pass Engineering Dossier of Three-Address Code Lowering, Fixed-Point Iterative Optimization, Differential Telemetry, and Virtual Machine Semantic Verification
         </p>
-
-        {/* Project Investigators Card */}
-        <div className="investigators-card">
-          <div className="investigators-title">PROJECT INVESTIGATORS &amp; SPECIALIZATIONS</div>
-          <div className="investigators-grid">
-            <div className="investigator-item">
-              <strong>Mikul Benara</strong>
-              <span className="reg-tag">| Reg. No: <strong>24BDS0149</strong> (B.Tech CSE - Data Science)</span>
-            </div>
-            <div className="investigator-item">
-              <strong>Ankita Banerjee</strong>
-              <span className="reg-tag">| Reg. No: <strong>24BCI0125</strong> (B.Tech CSE - InfoSecurity)</span>
-            </div>
-          </div>
-        </div>
       </header>
 
       {/* Sticky Dossier Navigation Bar */}
@@ -276,7 +261,7 @@ export default function App() {
           DEPARTMENT OF COMPUTER SCIENCE &amp; ENGINEERING • PROJECT EVALUATION DOSSIER
         </div>
         <div className="footer-meta">
-          Mikul Benara (24BDS0149) &amp; Ankita Banerjee (24BCI0125) • Academic Year 2026
+          Compiler Optimization Engine • Academic Evaluation Edition 2026
         </div>
       </footer>
     </div>
