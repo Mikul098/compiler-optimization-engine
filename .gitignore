@@ -10,3 +10,8 @@ src/lexer.yy.cpp
 src/parser.tab.cpp
 src/parser.tab.hpp
 src/parser.tab.h
+
+# Generated visualization artifacts
+ast.png
+ast.json
+

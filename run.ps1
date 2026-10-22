@@ -72,6 +72,30 @@ if ($Target -eq "all") {
         Write-Host "------------------------------------------" -ForegroundColor DarkGray
     }
 }
+elseif ($Target -in @("web", "frontend", "ui")) {
+    Write-Host ">>> Launching Frontend Dev Server at http://localhost:5173/ <<<" -ForegroundColor Cyan
+    Set-Location "frontend"
+    npm run dev
+    return
+}
+elseif ($Target -eq "complex") {
+    $testFiles = Get-ChildItem -Path "tests\complex_suite" -Filter "*.c" | Sort-Object Name
+    foreach ($file in $testFiles) {
+        Write-Host ""
+        Write-Host ">>> Running Complex Benchmark: $($file.Name) <<<" -ForegroundColor Magenta
+        & $Compiler $file.FullName
+        Write-Host "------------------------------------------" -ForegroundColor DarkGray
+    }
+}
+elseif ($Target -match "^bm\d+") {
+    $match = Get-ChildItem -Path "tests\complex_suite" -Filter "$Target*.c" | Select-Object -First 1
+    if ($match) {
+        Write-Host ">>> Running Complex Benchmark: $($match.Name) <<<" -ForegroundColor Magenta
+        & $Compiler $match.FullName
+    } else {
+        Write-Host "[Error] No complex benchmark found matching $Target" -ForegroundColor Red
+    }
+}
 elseif ($Target -match "^\d+$") {
     # If the user passed just a number like 1, 6, 7
     $match = Get-ChildItem -Path "tests" -Filter "test$Target*.toy" | Select-Object -First 1
@@ -89,6 +113,10 @@ elseif (Test-Path $Target) {
 elseif (Test-Path "tests\$Target") {
     Write-Host ">>> Running: tests\$Target <<<" -ForegroundColor Magenta
     & $Compiler "tests\$Target"
+}
+elseif (Test-Path "tests\complex_suite\$Target") {
+    Write-Host ">>> Running: tests\complex_suite\$Target <<<" -ForegroundColor Magenta
+    & $Compiler "tests\complex_suite\$Target"
 }
 else {
     Write-Host "[Error] Could not find test file or target: $Target" -ForegroundColor Red

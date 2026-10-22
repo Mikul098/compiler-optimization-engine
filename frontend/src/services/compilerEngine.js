@@ -17,10 +17,16 @@
  */
 
 export function parseToyProgram(source) {
-  // Simple clean tokenizer
-  const lines = source.split('\n');
+  // Strip multi-line comments: /* ... */
+  let cleanSource = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Strip preprocessor lines: #include ... or #define ...
+  cleanSource = cleanSource.replace(/^[ \t]*#.*$/gm, '');
+
+  const lines = cleanSource.split('\n');
   const statements = [];
   const errors = [];
+
+  const typeKeywords = /^(?:int|float|double|char|long|short|unsigned|signed|void|auto|const|var|let|bool|size_t|constexpr|static|inline|extern|volatile)\s+/;
 
   lines.forEach((rawLine, lineIdx) => {
     let line = rawLine.trim();
@@ -30,17 +36,96 @@ export function parseToyProgram(source) {
     }
     if (!line) return;
 
+    // Handle function headers, control flow headers, labels, and block braces
+    if (/^(?:(?:int|void|auto|char|long|bool|double|float)\s+)?(?:main|[a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*\{?$/.test(line) ||
+        /^(?:if|while|for|switch)\s*\([^)]*\)\s*\{?$/.test(line) ||
+        /^(?:case\s+[^:]+|default)\s*:/.test(line) ||
+        /^(?:break|continue|goto\s+[a-zA-Z_][a-zA-Z0-9_]*);?$/.test(line) ||
+        /^[a-zA-Z_][a-zA-Z0-9_]*\s*:$/.test(line) ||
+        /^(?:do|try|catch\s*\([^)]*\)|else)(?:\s*\{)?$/.test(line) ||
+        /^static_assert\s*\([^)]*\);?$/.test(line) ||
+        line === '{' || line === '}') {
+      return;
+    }
+
     if (!line.endsWith(';')) {
       errors.push(`Syntax error on line ${lineIdx + 1}: Missing semicolon`);
       return;
     }
     line = line.slice(0, -1).trim();
 
+    // Ignore return statements: return 0; or return;
+    if (/^return(?:\s+.*)?$/.test(line)) {
+      return;
+    }
+
+    // Strip leading type specifier (e.g. int a = 10 -> a = 10)
+    line = line.replace(typeKeywords, '');
+
+    // Check for printf: printf("...", x, y) or printf(x)
+    const printfMulti = line.match(/^printf\s*\(\s*"[^"]*"\s*,\s*(.+)\s*\)$/);
+    if (printfMulti) {
+      const args = printfMulti[1].split(',');
+      args.forEach(arg => {
+        const expr = parseExpression(arg.trim());
+        statements.push({ type: 'print', expr, raw: line });
+      });
+      return;
+    }
+
+    const printfSingle = line.match(/^printf\s*\(\s*([^",]+)\s*\)$/);
+    if (printfSingle) {
+      const expr = parseExpression(printfSingle[1].trim());
+      statements.push({ type: 'print', expr, raw: line });
+      return;
+    }
+
+    // Check for cout: cout << x; or cout << x << endl;
+    const coutMatch = line.match(/^(?:std::)?cout\s*<<\s*([^<;]+)(?:\s*<<\s*(?:std::)?endl)?$/);
+    if (coutMatch) {
+      const expr = parseExpression(coutMatch[1].trim());
+      statements.push({ type: 'print', expr, raw: line });
+      return;
+    }
+
     // Check for print statement: print x or print(x)
-    const printMatch = line.match(/^print\s*\(?\s*([a-zA-Z0-9_+*/\s()-]+)\s*\)?$/);
+    const printMatch = line.match(/^print\s*\(?\s*(.+)\s*\)?$/);
     if (printMatch) {
       const expr = parseExpression(printMatch[1].trim());
       statements.push({ type: 'print', expr, raw: line });
+      return;
+    }
+
+    // Check for compound assignments: id += expr, id -= expr, id *= expr, id /= expr, id %= expr, id &= expr, etc.
+    const compoundMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(\+=|-=|\*=|\/=|%=|&=|\|=|\^=)\s*(.+)$/);
+    if (compoundMatch) {
+      const varName = compoundMatch[1];
+      const opStr = compoundMatch[2];
+      const opChar = opStr[0];
+      const exprStr = compoundMatch[3].trim();
+      const rhsExpr = parseExpression(exprStr);
+      const expr = {
+        type: 'op',
+        op: opChar,
+        left: { type: 'var', name: varName },
+        right: rhsExpr
+      };
+      statements.push({ type: 'assign', varName, expr, raw: line });
+      return;
+    }
+
+    // Check for multiple comma-separated declarations/assignments: a = 10, b = 20, c
+    if (line.includes(',')) {
+      const parts = line.split(',');
+      parts.forEach(part => {
+        const p = part.trim();
+        const m = p.match(/^([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*=\s*(.+))?$/);
+        if (m) {
+          const varName = m[1];
+          const expr = m[2] ? parseExpression(m[2].trim()) : { type: 'num', value: 0 };
+          statements.push({ type: 'assign', varName, expr, raw: line });
+        }
+      });
       return;
     }
 
@@ -51,6 +136,14 @@ export function parseToyProgram(source) {
       const exprStr = assignMatch[2].trim();
       const expr = parseExpression(exprStr);
       statements.push({ type: 'assign', varName, expr, raw: line });
+      return;
+    }
+
+    // Plain variable declaration without assignment: int a;
+    const declMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (declMatch) {
+      const varName = declMatch[1];
+      statements.push({ type: 'assign', varName, expr: { type: 'num', value: 0 }, raw: line });
       return;
     }
 
@@ -80,7 +173,7 @@ function tokenizeExpr(str) {
         id += str[i++];
       }
       tokens.push({ type: 'var', name: id });
-    } else if ('+-*/()'.includes(ch)) {
+    } else if ('+-*/%&|^()'.includes(ch)) {
       tokens.push({ type: 'op', value: ch });
       i++;
     } else {
@@ -98,6 +191,15 @@ function parseExpression(exprStr) {
   function parsePrimary() {
     const tok = tokens[pos];
     if (!tok) return { type: 'num', value: 0 };
+    if (tok.type === 'op' && tok.value === '-') {
+      pos++;
+      const operand = parsePrimary();
+      return { type: 'op', op: '-', left: { type: 'num', value: 0 }, right: operand };
+    }
+    if (tok.type === 'op' && tok.value === '+') {
+      pos++;
+      return parsePrimary();
+    }
     if (tok.type === 'num') {
       pos++;
       return { type: 'num', value: tok.value };
@@ -120,7 +222,7 @@ function parseExpression(exprStr) {
 
   function parseMulDiv() {
     let left = parsePrimary();
-    while (pos < tokens.length && (tokens[pos].value === '*' || tokens[pos].value === '/')) {
+    while (pos < tokens.length && (tokens[pos].value === '*' || tokens[pos].value === '/' || tokens[pos].value === '%')) {
       const op = tokens[pos].value;
       pos++;
       const right = parsePrimary();
@@ -131,7 +233,7 @@ function parseExpression(exprStr) {
 
   function parseAddSub() {
     let left = parseMulDiv();
-    while (pos < tokens.length && (tokens[pos].value === '+' || tokens[pos].value === '-')) {
+    while (pos < tokens.length && (tokens[pos].value === '+' || tokens[pos].value === '-' || tokens[pos].value === '&' || tokens[pos].value === '|' || tokens[pos].value === '^')) {
       const op = tokens[pos].value;
       pos++;
       const right = parseMulDiv();
@@ -354,11 +456,11 @@ function runCommonSubexpressionPass(instructions) {
     const instr = { ...instructions[i] };
     const original = instructionToString(instr);
 
-    // Redefinition invalidation
+    // Redefinition invalidation: invalidate if arg1, arg2, or resultVar matches instr.result
     if (instr.result) {
       for (const [sig, res] of Array.from(availableExprs.entries())) {
         const parts = sig.split(' ');
-        if (parts[1] === instr.result || parts[2] === instr.result) {
+        if (parts[1] === instr.result || parts[2] === instr.result || res === instr.result) {
           availableExprs.delete(sig);
         }
       }
@@ -390,6 +492,15 @@ function runDeadCodeEliminationPass(instructions) {
   const usedVars = new Set();
   const activeInstructions = [];
   let changes = 0;
+
+  const hasPrint = instructions.some(instr => instr.op === 'PRINT');
+  if (!hasPrint) {
+    instructions.forEach(instr => {
+      if (instr.result && !/^t\d+$/.test(instr.result)) {
+        usedVars.add(instr.result);
+      }
+    });
+  }
 
   // Backward liveness
   for (let i = instructions.length - 1; i >= 0; i--) {
