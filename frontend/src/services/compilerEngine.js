@@ -2,15 +2,20 @@
  * ==============================================================================
  * File: frontend/src/services/compilerEngine.js
  * Purpose: Full-fidelity JavaScript emulation of the Toy Compiler Pipeline.
- * 
+ *
  * Capabilities:
  *  - Tokenizer & Recursive-Descent AST Builder (respecting PEMDAS).
  *  - Three-Address Code (TAC) Quad Generator.
- *  - Step-by-Step Multi-Pass Optimizer:
- *      * ConstantFoldingPass (propagation & folding)
- *      * CommonSubexpressionPass (with canonical commutative signatures)
- *      * DeadCodeEliminationPass (backward liveness analysis)
- *      * PassManager fixed-point iteration recorder.
+ *  - Step-by-Step Multi-Pass Optimizer (8 passes, mirrors C++ backend exactly):
+ *      1. ConstantPropagationPass   - Forward-propagate known constants to expose folding
+ *      2. ConstantFoldingPass       - Fold fully-constant arithmetic/bitwise/logical exprs
+ *      3. AlgebraicSimplificationPass - Algebraic identities + strength reduction
+ *      4. CopyPropagationPass       - Eliminate temporaries by propagating copies
+ *      5. RedundantAssignmentPass   - Remove x=x self-assignments
+ *      6. CommonSubexpressionPass   - Replace duplicate computations with a single copy
+ *      7. DeadCodeEliminationPass   - Backward liveness analysis prunes dead assignments
+ *      8. PeepholePass              - Local 2-instruction window micro-optimizations
+ *      + PassManager fixed-point iteration recorder.
  *  - DiffEngine metrics computation (initial, final, reduction %, side-by-side rows).
  *  - Virtual Machine (Interpreter) execution of pre- and post-optimization TAC.
  * ==============================================================================
@@ -153,7 +158,7 @@ export function parseToyProgram(source) {
   return { statements, errors };
 }
 
-// Tokenize arithmetic expression
+// Tokenize expression (supports hex 0x, binary 0b, decimal, ids, multi-char & single-char ops)
 function tokenizeExpr(str) {
   const tokens = [];
   let i = 0;
@@ -161,6 +166,22 @@ function tokenizeExpr(str) {
     const ch = str[i];
     if (/\s/.test(ch)) {
       i++;
+    } else if (ch === '0' && (str[i + 1] === 'x' || str[i + 1] === 'X')) {
+      // Hex literal: 0xFF, 0x1A
+      let hex = '0x';
+      i += 2;
+      while (i < str.length && /[0-9a-fA-F]/.test(str[i])) {
+        hex += str[i++];
+      }
+      tokens.push({ type: 'num', value: parseInt(hex, 16) });
+    } else if (ch === '0' && (str[i + 1] === 'b' || str[i + 1] === 'B')) {
+      // Binary literal: 0b1010
+      let bin = '';
+      i += 2;
+      while (i < str.length && /[01]/.test(str[i])) {
+        bin += str[i++];
+      }
+      tokens.push({ type: 'num', value: parseInt(bin, 2) });
     } else if (/[0-9]/.test(ch)) {
       let num = '';
       while (i < str.length && /[0-9]/.test(str[i])) {
@@ -172,8 +193,34 @@ function tokenizeExpr(str) {
       while (i < str.length && /[a-zA-Z0-9_]/.test(str[i])) {
         id += str[i++];
       }
-      tokens.push({ type: 'var', name: id });
-    } else if ('+-*/%&|^()'.includes(ch)) {
+      // Alternate keyword tokens
+      if (id === 'and') tokens.push({ type: 'op', value: '&&' });
+      else if (id === 'or') tokens.push({ type: 'op', value: '||' });
+      else if (id === 'not') tokens.push({ type: 'op', value: '!' });
+      else if (id === 'bitand') tokens.push({ type: 'op', value: '&' });
+      else if (id === 'bitor') tokens.push({ type: 'op', value: '|' });
+      else if (id === 'xor') tokens.push({ type: 'op', value: '^' });
+      else if (id === 'compl') tokens.push({ type: 'op', value: '~' });
+      else if (id === 'true') tokens.push({ type: 'num', value: 1 });
+      else if (id === 'false') tokens.push({ type: 'num', value: 0 });
+      else tokens.push({ type: 'var', name: id });
+    } else if (str.substr(i, 2) === '<<') {
+      tokens.push({ type: 'op', value: '<<' }); i += 2;
+    } else if (str.substr(i, 2) === '>>') {
+      tokens.push({ type: 'op', value: '>>' }); i += 2;
+    } else if (str.substr(i, 2) === '==') {
+      tokens.push({ type: 'op', value: '==' }); i += 2;
+    } else if (str.substr(i, 2) === '!=') {
+      tokens.push({ type: 'op', value: '!=' }); i += 2;
+    } else if (str.substr(i, 2) === '<=') {
+      tokens.push({ type: 'op', value: '<=' }); i += 2;
+    } else if (str.substr(i, 2) === '>=') {
+      tokens.push({ type: 'op', value: '>=' }); i += 2;
+    } else if (str.substr(i, 2) === '&&') {
+      tokens.push({ type: 'op', value: '&&' }); i += 2;
+    } else if (str.substr(i, 2) === '||') {
+      tokens.push({ type: 'op', value: '||' }); i += 2;
+    } else if ('+-*/%&|^~!()<>'.includes(ch)) {
       tokens.push({ type: 'op', value: ch });
       i++;
     } else {
@@ -183,7 +230,7 @@ function tokenizeExpr(str) {
   return tokens;
 }
 
-// Shunting-yard or recursive descent for PEMDAS
+// Recursive-descent expression parser respecting full C operator precedence
 function parseExpression(exprStr) {
   const tokens = tokenizeExpr(exprStr);
   let pos = 0;
@@ -193,12 +240,27 @@ function parseExpression(exprStr) {
     if (!tok) return { type: 'num', value: 0 };
     if (tok.type === 'op' && tok.value === '-') {
       pos++;
+      const nextTok = tokens[pos];
+      if (nextTok && nextTok.type === 'num') {
+        pos++;
+        return { type: 'num', value: -nextTok.value };
+      }
       const operand = parsePrimary();
       return { type: 'op', op: '-', left: { type: 'num', value: 0 }, right: operand };
     }
     if (tok.type === 'op' && tok.value === '+') {
       pos++;
       return parsePrimary();
+    }
+    if (tok.type === 'op' && tok.value === '~') {
+      pos++;
+      const operand = parsePrimary();
+      return { type: 'unary', op: '~', expr: operand };
+    }
+    if (tok.type === 'op' && tok.value === '!') {
+      pos++;
+      const operand = parsePrimary();
+      return { type: 'op', op: '==', left: operand, right: { type: 'num', value: 0 } };
     }
     if (tok.type === 'num') {
       pos++;
@@ -210,7 +272,7 @@ function parseExpression(exprStr) {
     }
     if (tok.type === 'op' && tok.value === '(') {
       pos++;
-      const node = parseAddSub();
+      const node = parseLogicalOr();
       if (tokens[pos] && tokens[pos].value === ')') {
         pos++;
       }
@@ -233,7 +295,7 @@ function parseExpression(exprStr) {
 
   function parseAddSub() {
     let left = parseMulDiv();
-    while (pos < tokens.length && (tokens[pos].value === '+' || tokens[pos].value === '-' || tokens[pos].value === '&' || tokens[pos].value === '|' || tokens[pos].value === '^')) {
+    while (pos < tokens.length && (tokens[pos].value === '+' || tokens[pos].value === '-')) {
       const op = tokens[pos].value;
       pos++;
       const right = parseMulDiv();
@@ -242,7 +304,90 @@ function parseExpression(exprStr) {
     return left;
   }
 
-  return parseAddSub();
+  function parseShift() {
+    let left = parseAddSub();
+    while (pos < tokens.length && (tokens[pos].value === '<<' || tokens[pos].value === '>>')) {
+      const op = tokens[pos].value;
+      pos++;
+      const right = parseAddSub();
+      left = { type: 'op', op, left, right };
+    }
+    return left;
+  }
+
+  function parseRelational() {
+    let left = parseShift();
+    while (pos < tokens.length && (tokens[pos].value === '<' || tokens[pos].value === '<=' || tokens[pos].value === '>' || tokens[pos].value === '>=')) {
+      const op = tokens[pos].value;
+      pos++;
+      const right = parseShift();
+      left = { type: 'op', op, left, right };
+    }
+    return left;
+  }
+
+  function parseEquality() {
+    let left = parseRelational();
+    while (pos < tokens.length && (tokens[pos].value === '==' || tokens[pos].value === '!=')) {
+      const op = tokens[pos].value;
+      pos++;
+      const right = parseRelational();
+      left = { type: 'op', op, left, right };
+    }
+    return left;
+  }
+
+  function parseBitwiseAnd() {
+    let left = parseEquality();
+    while (pos < tokens.length && tokens[pos].value === '&') {
+      pos++;
+      const right = parseEquality();
+      left = { type: 'op', op: '&', left, right };
+    }
+    return left;
+  }
+
+  function parseBitwiseXor() {
+    let left = parseBitwiseAnd();
+    while (pos < tokens.length && tokens[pos].value === '^') {
+      pos++;
+      const right = parseBitwiseAnd();
+      left = { type: 'op', op: '^', left, right };
+    }
+    return left;
+  }
+
+  function parseBitwiseOr() {
+    let left = parseBitwiseXor();
+    while (pos < tokens.length && tokens[pos].value === '|') {
+      pos++;
+      const right = parseBitwiseXor();
+      left = { type: 'op', op: '|', left, right };
+    }
+    return left;
+  }
+
+  function parseLogicalAnd() {
+    let left = parseBitwiseOr();
+    while (pos < tokens.length && tokens[pos].value === '&&') {
+      pos++;
+      const right = parseBitwiseOr();
+      left = { type: 'op', op: '&&', left, right };
+    }
+    return left;
+  }
+
+  function parseLogicalOr() {
+    let left = parseLogicalAnd();
+    while (pos < tokens.length && tokens[pos].value === '||') {
+      pos++;
+      const right = parseLogicalAnd();
+      left = { type: 'op', op: '||', left, right };
+    }
+    return left;
+  }
+
+  return parseLogicalOr();
 }
 
 // Build AST Node Hierarchy for Graph Visualizer
@@ -297,8 +442,24 @@ function exprToASTNode(expr, prefix = 'node') {
       children: []
     };
   }
+  if (expr.type === 'unary') {
+    return {
+      id: `${prefix}_unary`,
+      type: 'op',
+      name: `UnaryOp: ${expr.op}`,
+      op: expr.op,
+      children: [exprToASTNode(expr.expr, `${prefix}_U`)]
+    };
+  }
   if (expr.type === 'op') {
-    const opNames = { '+': 'Add', '-': 'Subtract', '*': 'Multiply', '/': 'Divide' };
+    const opNames = {
+      '+': 'Add', '-': 'Subtract', '*': 'Multiply', '/': 'Divide', '%': 'Modulo',
+      '&': 'BitwiseAnd', '|': 'BitwiseOr', '^': 'BitwiseXor',
+      '<<': 'ShiftLeft', '>>': 'ShiftRight',
+      '&&': 'LogicalAnd', '||': 'LogicalOr',
+      '==': 'Equal', '!=': 'NotEqual',
+      '<': 'LessThan', '>': 'GreaterThan', '<=': 'LessEqual', '>=': 'GreaterEqual'
+    };
     return {
       id: `${prefix}_op`,
       type: 'op',
@@ -323,13 +484,31 @@ export function generateTAC(statements) {
   }
 
   function emitExpr(expr) {
+    if (!expr) return '0';
     if (expr.type === 'num') return String(expr.value);
     if (expr.type === 'var') return expr.name;
+    if (expr.type === 'unary') {
+      const arg1 = emitExpr(expr.expr);
+      const result = newTemp();
+      if (expr.op === '~') {
+        instructions.push({ op: 'BNOT', arg1, arg2: '', result });
+      } else {
+        instructions.push({ op: 'ASSIGN', arg1, arg2: '', result });
+      }
+      return result;
+    }
     if (expr.type === 'op') {
       const arg1 = emitExpr(expr.left);
       const arg2 = emitExpr(expr.right);
       const result = newTemp();
-      const opMap = { '+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV' };
+      const opMap = {
+        '+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV', '%': 'MOD',
+        '&': 'BAND', '|': 'BOR', '^': 'BXOR',
+        '<<': 'SHL', '>>': 'SHR',
+        '&&': 'AND', '||': 'OR',
+        '==': 'EQ', '!=': 'NE',
+        '<': 'LT', '>': 'GT', '<=': 'LE', '>=': 'GE'
+      };
       instructions.push({
         op: opMap[expr.op] || 'ADD',
         arg1,
@@ -364,12 +543,27 @@ export function generateTAC(statements) {
   return instructions;
 }
 
+
 export function instructionToString(instr) {
   switch (instr.op) {
-    case 'ADD': return `${instr.result} = ${instr.arg1} + ${instr.arg2}`;
-    case 'SUB': return `${instr.result} = ${instr.arg1} - ${instr.arg2}`;
-    case 'MUL': return `${instr.result} = ${instr.arg1} * ${instr.arg2}`;
-    case 'DIV': return `${instr.result} = ${instr.arg1} / ${instr.arg2}`;
+    case 'ADD':  return `${instr.result} = ${instr.arg1} + ${instr.arg2}`;
+    case 'SUB':  return `${instr.result} = ${instr.arg1} - ${instr.arg2}`;
+    case 'MUL':  return `${instr.result} = ${instr.arg1} * ${instr.arg2}`;
+    case 'DIV':  return `${instr.result} = ${instr.arg1} / ${instr.arg2}`;
+    case 'MOD':  return `${instr.result} = ${instr.arg1} % ${instr.arg2}`;
+    case 'BAND': return `${instr.result} = ${instr.arg1} & ${instr.arg2}`;
+    case 'BOR':  return `${instr.result} = ${instr.arg1} | ${instr.arg2}`;
+    case 'BXOR': return `${instr.result} = ${instr.arg1} ^ ${instr.arg2}`;
+    case 'SHL':  return `${instr.result} = ${instr.arg1} << ${instr.arg2}`;
+    case 'SHR':  return `${instr.result} = ${instr.arg1} >> ${instr.arg2}`;
+    case 'AND':  return `${instr.result} = ${instr.arg1} && ${instr.arg2}`;
+    case 'OR':   return `${instr.result} = ${instr.arg1} || ${instr.arg2}`;
+    case 'EQ':   return `${instr.result} = ${instr.arg1} == ${instr.arg2}`;
+    case 'NE':   return `${instr.result} = ${instr.arg1} != ${instr.arg2}`;
+    case 'LT':   return `${instr.result} = ${instr.arg1} < ${instr.arg2}`;
+    case 'GT':   return `${instr.result} = ${instr.arg1} > ${instr.arg2}`;
+    case 'LE':   return `${instr.result} = ${instr.arg1} <= ${instr.arg2}`;
+    case 'GE':   return `${instr.result} = ${instr.arg1} >= ${instr.arg2}`;
     case 'ASSIGN': return `${instr.result} = ${instr.arg1}`;
     case 'PRINT': return `print ${instr.arg1}`;
     case 'NOP': return 'nop';
@@ -392,6 +586,12 @@ function runConstantFoldingPass(instructions) {
     const instr = { ...instructions[i] };
     const original = instructionToString(instr);
 
+    if (instr.op === 'LABEL') {
+      knownConstants.clear();
+      modified.push(instr);
+      continue;
+    }
+
     // Propagation
     if (knownConstants.has(instr.arg1)) {
       instr.arg1 = String(knownConstants.get(instr.arg1));
@@ -400,30 +600,72 @@ function runConstantFoldingPass(instructions) {
       instr.arg2 = String(knownConstants.get(instr.arg2));
     }
 
-    // Folding
-    const isArithmetic = ['ADD', 'SUB', 'MUL', 'DIV'].includes(instr.op);
-    if (isArithmetic && isNumeric(instr.arg1) && isNumeric(instr.arg2)) {
+    // Unary BNOT folding
+    if (instr.op === 'BNOT' && isNumeric(instr.arg1)) {
+      const v = parseInt(instr.arg1, 10);
+      const res = (~v) | 0;
+      instr.op = 'ASSIGN';
+      instr.arg1 = String(res);
+      instr.arg2 = '';
+      knownConstants.set(instr.result, res);
+    }
+
+    // Binary folding (all 16 opcodes)
+    const foldOps = [
+      'ADD', 'SUB', 'MUL', 'DIV', 'MOD',
+      'BAND', 'BOR', 'BXOR', 'SHL', 'SHR',
+      'AND', 'OR', 'EQ', 'NE', 'LT', 'GT', 'LE', 'GE'
+    ];
+    if (foldOps.includes(instr.op) && isNumeric(instr.arg1) && isNumeric(instr.arg2)) {
       const v1 = parseInt(instr.arg1, 10);
       const v2 = parseInt(instr.arg2, 10);
       let res = 0;
-      let divZero = false;
+      let safe = true;
 
-      if (instr.op === 'ADD') res = v1 + v2;
-      else if (instr.op === 'SUB') res = v1 - v2;
-      else if (instr.op === 'MUL') res = v1 * v2;
-      else if (instr.op === 'DIV') {
-        if (v2 === 0) divZero = true;
-        else res = Math.trunc(v1 / v2);
+      switch (instr.op) {
+        case 'ADD': res = (v1 + v2) | 0; break;
+        case 'SUB': res = (v1 - v2) | 0; break;
+        case 'MUL': res = Math.imul(v1, v2); break;
+        case 'DIV':
+          if (v2 === 0) safe = false;
+          else res = Math.trunc(v1 / v2);
+          break;
+        case 'MOD':
+          if (v2 === 0) safe = false;
+          else res = v1 % v2;
+          break;
+        case 'BAND': res = (v1 & v2) | 0; break;
+        case 'BOR':  res = (v1 | v2) | 0; break;
+        case 'BXOR': res = (v1 ^ v2) | 0; break;
+        case 'SHL':
+          if (v2 >= 0 && v2 < 31) res = (v1 << v2) | 0;
+          else safe = false;
+          break;
+        case 'SHR':
+          if (v2 >= 0 && v2 < 32) res = (v1 >> v2) | 0;
+          else safe = false;
+          break;
+        case 'AND': res = (v1 !== 0 && v2 !== 0) ? 1 : 0; break;
+        case 'OR':  res = (v1 !== 0 || v2 !== 0) ? 1 : 0; break;
+        case 'EQ':  res = v1 === v2 ? 1 : 0; break;
+        case 'NE':  res = v1 !== v2 ? 1 : 0; break;
+        case 'LT':  res = v1 < v2 ? 1 : 0; break;
+        case 'GT':  res = v1 > v2 ? 1 : 0; break;
+        case 'LE':  res = v1 <= v2 ? 1 : 0; break;
+        case 'GE':  res = v1 >= v2 ? 1 : 0; break;
+        default: safe = false; break;
       }
 
-      if (!divZero) {
+      if (safe) {
         instr.op = 'ASSIGN';
         instr.arg1 = String(res);
         instr.arg2 = '';
         knownConstants.set(instr.result, res);
       }
-    } else if (instr.op === 'ASSIGN' && isNumeric(instr.arg1)) {
+    } else if (instr.op === 'ASSIGN' && isNumeric(instr.arg1) && !instr.arg2) {
       knownConstants.set(instr.result, parseInt(instr.arg1, 10));
+    } else if (instr.result) {
+      knownConstants.delete(instr.result);
     }
 
     if (instructionToString(instr) !== original) {
@@ -435,11 +677,12 @@ function runConstantFoldingPass(instructions) {
   return { instructions: modified, changes };
 }
 
-// 2. Common Subexpression Elimination Pass (with Commutativity)
+// 2. Common Subexpression Elimination Pass (with Commutativity & Full Op Support)
 function getExpressionSignature(op, arg1, arg2) {
   let a1 = arg1;
   let a2 = arg2;
-  if ((op === 'ADD' || op === 'MUL') && a1.localeCompare(a2) > 0) {
+  const isCommutative = ['ADD', 'MUL', 'AND', 'OR', 'BAND', 'BOR', 'BXOR', 'EQ', 'NE'].includes(op);
+  if (isCommutative && a1.localeCompare(a2) > 0) {
     const tmp = a1;
     a1 = a2;
     a2 = tmp;
@@ -456,18 +699,18 @@ function runCommonSubexpressionPass(instructions) {
     const instr = { ...instructions[i] };
     const original = instructionToString(instr);
 
-    // Redefinition invalidation: invalidate if arg1, arg2, or resultVar matches instr.result
-    if (instr.result) {
-      for (const [sig, res] of Array.from(availableExprs.entries())) {
-        const parts = sig.split(' ');
-        if (parts[1] === instr.result || parts[2] === instr.result || res === instr.result) {
-          availableExprs.delete(sig);
-        }
-      }
+    if (instr.op === 'LABEL') {
+      availableExprs.clear();
+      modified.push(instr);
+      continue;
     }
 
-    const isMath = ['ADD', 'SUB', 'MUL', 'DIV'].includes(instr.op);
-    if (isMath) {
+    const cseOps = [
+      'ADD', 'SUB', 'MUL', 'DIV', 'MOD',
+      'BAND', 'BOR', 'BXOR', 'EQ', 'NE',
+      'LT', 'GT', 'LE', 'GE'
+    ];
+    if (cseOps.includes(instr.op)) {
       const sig = getExpressionSignature(instr.op, instr.arg1, instr.arg2);
       if (availableExprs.has(sig)) {
         instr.op = 'ASSIGN';
@@ -475,6 +718,15 @@ function runCommonSubexpressionPass(instructions) {
         instr.arg2 = '';
       } else {
         availableExprs.set(sig, instr.result);
+      }
+    }
+
+    if (instr.result) {
+      for (const [sig, res] of Array.from(availableExprs.entries())) {
+        const parts = sig.split(' ');
+        if (parts[1] === instr.result || parts[2] === instr.result || res === instr.result) {
+          availableExprs.delete(sig);
+        }
       }
     }
 
@@ -487,51 +739,255 @@ function runCommonSubexpressionPass(instructions) {
   return { instructions: modified, changes };
 }
 
-// 3. Dead Code Elimination Pass
+// 3. Dead Code Elimination Pass (Safe Backward Liveness)
 function runDeadCodeEliminationPass(instructions) {
-  const usedVars = new Set();
-  const activeInstructions = [];
+  const hasControlFlow = instructions.some(i =>
+    i.op === 'LABEL' || i.op === 'GOTO' || i.op === 'IF_ZERO' || i.op === 'IF_NOT_ZERO'
+  );
+
   let changes = 0;
 
-  const hasPrint = instructions.some(instr => instr.op === 'PRINT');
+  if (hasControlFlow) {
+    const allReadVars = new Set();
+    instructions.forEach(i => {
+      if (i.arg1 && !isNumeric(i.arg1)) allReadVars.add(i.arg1);
+      if (i.arg2 && !isNumeric(i.arg2)) allReadVars.add(i.arg2);
+    });
+
+    const valueOps = [
+      'ASSIGN', 'ADD', 'SUB', 'MUL', 'DIV', 'MOD',
+      'AND', 'OR', 'BAND', 'BOR', 'BXOR', 'BNOT',
+      'SHL', 'SHR', 'EQ', 'NE', 'LT', 'GT', 'LE', 'GE'
+    ];
+
+    const active = [];
+    instructions.forEach(i => {
+      if (valueOps.includes(i.op) && i.result && !allReadVars.has(i.result)) {
+        changes++;
+      } else {
+        active.push(i);
+      }
+    });
+    return { instructions: active, changes };
+  }
+
+  // Straight-line backward liveness analysis
+  const liveVars = new Set();
+  const hasPrint = instructions.some(i => i.op === 'PRINT');
   if (!hasPrint) {
-    instructions.forEach(instr => {
-      if (instr.result && !/^t\d+$/.test(instr.result)) {
-        usedVars.add(instr.result);
+    instructions.forEach(i => {
+      if (i.result && !/^t\d+$/.test(i.result)) {
+        liveVars.add(i.result);
       }
     });
   }
 
-  // Backward liveness
+  const active = [];
   for (let i = instructions.length - 1; i >= 0; i--) {
     const instr = instructions[i];
-
     if (instr.op === 'PRINT') {
-      activeInstructions.push(instr);
-      if (!isNumeric(instr.arg1) && instr.arg1) {
-        usedVars.add(instr.arg1);
+      active.push(instr);
+      if (instr.arg1 && !isNumeric(instr.arg1)) {
+        liveVars.add(instr.arg1);
       }
-    } else {
-      if (usedVars.has(instr.result)) {
-        activeInstructions.push(instr);
-        if (!isNumeric(instr.arg1) && instr.arg1) {
-          usedVars.add(instr.arg1);
-        }
-        if (!isNumeric(instr.arg2) && instr.arg2) {
-          usedVars.add(instr.arg2);
-        }
+    } else if (instr.result) {
+      if (liveVars.has(instr.result)) {
+        active.push(instr);
+        liveVars.delete(instr.result);
+        if (instr.arg1 && !isNumeric(instr.arg1)) liveVars.add(instr.arg1);
+        if (instr.arg2 && !isNumeric(instr.arg2)) liveVars.add(instr.arg2);
       } else {
-        // Dead assignment eliminated
         changes++;
       }
+    } else {
+      active.push(instr);
     }
   }
 
-  activeInstructions.reverse();
-  return { instructions: activeInstructions, changes };
+  active.reverse();
+  return { instructions: active, changes };
 }
 
-// Pass Manager Fixed-Point Loop with Intermediate Snapshots
+// 4. Algebraic Simplification & Strength Reduction
+function runAlgebraicSimplificationPass(instructions) {
+  let changes = 0;
+  const modified = instructions.map(raw => {
+    const instr = { ...raw };
+    const original = instructionToString(instr);
+
+    // Helper: same non-numeric variable in both operands
+    const sameVar = () => instr.arg1 && !isNumeric(instr.arg1) && instr.arg1 === instr.arg2;
+
+    if (instr.op === 'MUL') {
+      if (instr.arg1 === '0' || instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+      else if (instr.arg2 === '1') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (instr.arg1 === '1') { instr.op = 'ASSIGN'; instr.arg1 = instr.arg2; instr.arg2 = ''; }
+      else if (instr.arg2 === '2' && !isNumeric(instr.arg1)) { instr.op = 'SHL'; instr.arg2 = '1'; }
+      else if (instr.arg1 === '2' && !isNumeric(instr.arg2)) { instr.op = 'SHL'; instr.arg1 = instr.arg2; instr.arg2 = '1'; }
+      else if (instr.arg2 === '4' && !isNumeric(instr.arg1)) { instr.op = 'SHL'; instr.arg2 = '2'; }
+      else if (instr.arg1 === '4' && !isNumeric(instr.arg2)) { instr.op = 'SHL'; instr.arg1 = instr.arg2; instr.arg2 = '2'; }
+      else if (instr.arg2 === '8' && !isNumeric(instr.arg1)) { instr.op = 'SHL'; instr.arg2 = '3'; }
+      else if (instr.arg1 === '8' && !isNumeric(instr.arg2)) { instr.op = 'SHL'; instr.arg1 = instr.arg2; instr.arg2 = '3'; }
+    } else if (instr.op === 'ADD') {
+      if (instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (instr.arg1 === '0') { instr.op = 'ASSIGN'; instr.arg1 = instr.arg2; instr.arg2 = ''; }
+    } else if (instr.op === 'SUB') {
+      if (instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (sameVar()) { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+    } else if (instr.op === 'DIV') {
+      if (instr.arg2 === '1') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (sameVar()) { instr.op = 'ASSIGN'; instr.arg1 = '1'; instr.arg2 = ''; }
+    } else if (instr.op === 'MOD') {
+      if (instr.arg2 === '1' || sameVar()) { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+    } else if (instr.op === 'BAND') {
+      if (instr.arg1 === '0' || instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+      else if (sameVar()) { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+    } else if (instr.op === 'BOR') {
+      if (instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (instr.arg1 === '0') { instr.op = 'ASSIGN'; instr.arg1 = instr.arg2; instr.arg2 = ''; }
+      else if (sameVar()) { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+    } else if (instr.op === 'BXOR') {
+      if (sameVar()) { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+      else if (instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+      else if (instr.arg1 === '0') { instr.op = 'ASSIGN'; instr.arg1 = instr.arg2; instr.arg2 = ''; }
+    } else if (instr.op === 'SHL' || instr.op === 'SHR') {
+      if (instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg2 = ''; }
+    } else if (instr.op === 'AND') {
+      if (instr.arg1 === '0' || instr.arg2 === '0') { instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = ''; }
+    } else if (instr.op === 'OR') {
+      if (instr.arg1 === '1' || instr.arg2 === '1') { instr.op = 'ASSIGN'; instr.arg1 = '1'; instr.arg2 = ''; }
+    } else if (instr.op === 'EQ' && sameVar()) {
+      instr.op = 'ASSIGN'; instr.arg1 = '1'; instr.arg2 = '';
+    } else if (instr.op === 'NE' && sameVar()) {
+      instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = '';
+    } else if ((instr.op === 'LT' || instr.op === 'GT') && sameVar()) {
+      instr.op = 'ASSIGN'; instr.arg1 = '0'; instr.arg2 = '';
+    } else if ((instr.op === 'LE' || instr.op === 'GE') && sameVar()) {
+      instr.op = 'ASSIGN'; instr.arg1 = '1'; instr.arg2 = '';
+    }
+
+    if (instructionToString(instr) !== original) changes++;
+    return instr;
+  });
+  return { instructions: modified, changes };
+}
+
+// 5. Copy Propagation Pass
+function runCopyPropagationPass(instructions) {
+  const copyMap = new Map(); // var -> source variable
+  let changes = 0;
+  const modified = [];
+
+  for (const raw of instructions) {
+    const instr = { ...raw };
+    const original = instructionToString(instr);
+
+    if (instr.op === 'LABEL') { copyMap.clear(); modified.push(instr); continue; }
+
+    // Propagate
+    if (!isNumeric(instr.arg1) && instr.arg1 && copyMap.has(instr.arg1)) instr.arg1 = copyMap.get(instr.arg1);
+    if (!isNumeric(instr.arg2) && instr.arg2 && copyMap.has(instr.arg2)) instr.arg2 = copyMap.get(instr.arg2);
+
+    // Invalidate copies involving this result
+    if (instr.result) {
+      for (const [k, v] of Array.from(copyMap.entries())) {
+        if (k === instr.result || v === instr.result) copyMap.delete(k);
+      }
+      // Record new copy: result = plainVar
+      if (instr.op === 'ASSIGN' && instr.arg1 && !isNumeric(instr.arg1) && !instr.arg2) {
+        copyMap.set(instr.result, instr.arg1);
+      }
+    }
+
+    if (instructionToString(instr) !== original) changes++;
+    modified.push(instr);
+  }
+  return { instructions: modified, changes };
+}
+
+// 6. Redundant Assignment Elimination
+function runRedundantAssignmentPass(instructions) {
+  let changes = 0;
+  const modified = instructions.filter(raw => {
+    if (raw.op === 'ASSIGN' && raw.result && !raw.arg2 && raw.arg1 === raw.result) {
+      changes++;
+      return false;
+    }
+    return true;
+  });
+  return { instructions: modified, changes };
+}
+
+// 7. Constant Propagation Pass (cross-block forward)
+function runConstantPropagationPass(instructions) {
+  const constMap = new Map(); // var -> numeric string
+  let changes = 0;
+  const modified = [];
+
+  for (const raw of instructions) {
+    const instr = { ...raw };
+    const original = instructionToString(instr);
+
+    if (instr.op === 'LABEL') { constMap.clear(); modified.push(instr); continue; }
+
+    // Substitute known constants
+    if (!isNumeric(instr.arg1) && instr.arg1 && constMap.has(instr.arg1)) instr.arg1 = constMap.get(instr.arg1);
+    if (!isNumeric(instr.arg2) && instr.arg2 && constMap.has(instr.arg2)) instr.arg2 = constMap.get(instr.arg2);
+
+    // Update map
+    if (instr.result) {
+      if (instr.op === 'ASSIGN' && isNumeric(instr.arg1) && !instr.arg2) {
+        constMap.set(instr.result, instr.arg1);
+      } else {
+        constMap.delete(instr.result);
+      }
+    }
+
+    if (instructionToString(instr) !== original) changes++;
+    modified.push(instr);
+  }
+  return { instructions: modified, changes };
+}
+
+// 8. Peephole Optimization Pass
+function runPeepholePass(instructions) {
+  let changes = 0;
+  const result = [...instructions.map(i => ({ ...i }))];
+
+  // Count uses of each variable
+  const useCount = new Map();
+  for (const instr of result) {
+    if (instr.arg1 && !isNumeric(instr.arg1)) useCount.set(instr.arg1, (useCount.get(instr.arg1) || 0) + 1);
+    if (instr.arg2 && !isNumeric(instr.arg2)) useCount.set(instr.arg2, (useCount.get(instr.arg2) || 0) + 1);
+  }
+
+  // Pattern A: tN = expr; dst = tN  -->  dst = expr  (when tN used exactly once)
+  for (let i = 0; i + 1 < result.length; i++) {
+    const curr = result[i];
+    const next = result[i + 1];
+    const tempPattern = /^t\d+$/.test(curr.result);
+    if (tempPattern && next.op === 'ASSIGN' && next.arg1 === curr.result && !next.arg2 && useCount.get(curr.result) === 1) {
+      curr.result = next.result;
+      next.op = 'NOP'; next.arg1 = ''; next.arg2 = ''; next.result = '';
+      changes++;
+    }
+  }
+
+  // Pattern C: consecutive identical assignments x=v; x=v
+  for (let i = 0; i + 1 < result.length; i++) {
+    const curr = result[i];
+    const next = result[i + 1];
+    if (curr.op === 'ASSIGN' && next.op === 'ASSIGN' &&
+        curr.result === next.result && curr.arg1 === next.arg1 && curr.arg2 === next.arg2) {
+      curr.op = 'NOP'; curr.arg1 = ''; curr.arg2 = ''; curr.result = '';
+      changes++;
+    }
+  }
+
+  return { instructions: result.filter(i => i.op !== 'NOP'), changes };
+}
+
+// Pass Manager Fixed-Point Loop with Intermediate Snapshots (8 passes, mirrors C++ backend)
 export function runPassManager(initialInstructions) {
   let instructions = initialInstructions.map(i => ({ ...i }));
   const history = [
@@ -552,27 +1008,81 @@ export function runPassManager(initialInstructions) {
     changed = false;
     const beforeState = instructions.map(instructionToString).join('\n');
 
+    // Pass 7: Constant Propagation (run first to expose folding opportunities)
+    const cp = runConstantPropagationPass(instructions);
+    instructions = cp.instructions;
+    history.push({
+      step: history.length, iteration,
+      name: `Loop ${iteration}: Constant Propagation`,
+      passName: 'ConstantPropagationPass',
+      changes: cp.changes,
+      instructions: instructions.map(i => ({ ...i })),
+      summary: cp.changes > 0
+        ? `Forward-propagated ${cp.changes} compile-time constants across basic blocks.`
+        : 'No new constant propagation opportunities.'
+    });
+
     // Pass 1: Constant Folding
     const cf = runConstantFoldingPass(instructions);
     instructions = cf.instructions;
     history.push({
-      step: history.length,
-      iteration,
+      step: history.length, iteration,
       name: `Loop ${iteration}: Constant Folding`,
       passName: 'ConstantFoldingPass',
       changes: cf.changes,
       instructions: instructions.map(i => ({ ...i })),
-      summary: cf.changes > 0 
+      summary: cf.changes > 0
         ? `Propagated known constants and folded arithmetic operations (${cf.changes} instructions modified).`
         : 'No further constant folding opportunities detected.'
     });
 
-    // Pass 2: Common Subexpression Elimination
+    // Pass 4: Algebraic Simplification & Strength Reduction
+    const alg = runAlgebraicSimplificationPass(instructions);
+    instructions = alg.instructions;
+    history.push({
+      step: history.length, iteration,
+      name: `Loop ${iteration}: Algebraic Simplification`,
+      passName: 'AlgebraicSimplificationPass',
+      changes: alg.changes,
+      instructions: instructions.map(i => ({ ...i })),
+      summary: alg.changes > 0
+        ? `Applied ${alg.changes} algebraic identities and strength reductions (e.g. x*2→x<<1, x-x→0).`
+        : 'No algebraic simplification opportunities.'
+    });
+
+    // Pass 5: Copy Propagation
+    const copy = runCopyPropagationPass(instructions);
+    instructions = copy.instructions;
+    history.push({
+      step: history.length, iteration,
+      name: `Loop ${iteration}: Copy Propagation`,
+      passName: 'CopyPropagationPass',
+      changes: copy.changes,
+      instructions: instructions.map(i => ({ ...i })),
+      summary: copy.changes > 0
+        ? `Propagated ${copy.changes} variable copies, eliminating unnecessary temporaries.`
+        : 'No copy propagation opportunities.'
+    });
+
+    // Pass 6: Redundant Assignment Elimination
+    const red = runRedundantAssignmentPass(instructions);
+    instructions = red.instructions;
+    history.push({
+      step: history.length, iteration,
+      name: `Loop ${iteration}: Redundant Assignments`,
+      passName: 'RedundantAssignmentPass',
+      changes: red.changes,
+      instructions: instructions.map(i => ({ ...i })),
+      summary: red.changes > 0
+        ? `Removed ${red.changes} self-assignment no-ops (x = x).`
+        : 'No redundant self-assignments found.'
+    });
+
+    // Pass 3: Common Subexpression Elimination
     const cse = runCommonSubexpressionPass(instructions);
     instructions = cse.instructions;
     history.push({
-      step: history.length,
-      iteration,
+      step: history.length, iteration,
       name: `Loop ${iteration}: Common Subexpressions`,
       passName: 'CommonSubexpressionPass',
       changes: cse.changes,
@@ -582,12 +1092,11 @@ export function runPassManager(initialInstructions) {
         : 'No duplicate signatures available.'
     });
 
-    // Pass 3: Dead Code Elimination
+    // Pass 2: Dead Code Elimination
     const dce = runDeadCodeEliminationPass(instructions);
     instructions = dce.instructions;
     history.push({
-      step: history.length,
-      iteration,
+      step: history.length, iteration,
       name: `Loop ${iteration}: Dead Code Elimination`,
       passName: 'DeadCodeEliminationPass',
       changes: dce.changes,
@@ -595,6 +1104,20 @@ export function runPassManager(initialInstructions) {
       summary: dce.changes > 0
         ? `Eliminated orphaned intermediate assignments (${dce.changes} dead instructions pruned).`
         : 'All surviving variables are active.'
+    });
+
+    // Pass 8: Peephole
+    const ph = runPeepholePass(instructions);
+    instructions = ph.instructions;
+    history.push({
+      step: history.length, iteration,
+      name: `Loop ${iteration}: Peephole`,
+      passName: 'PeepholePass',
+      changes: ph.changes,
+      instructions: instructions.map(i => ({ ...i })),
+      summary: ph.changes > 0
+        ? `Applied ${ph.changes} local 2-instruction window micro-optimizations.`
+        : 'No peephole opportunities found.'
     });
 
     const afterState = instructions.map(instructionToString).join('\n');
@@ -657,30 +1180,32 @@ export function executeTAC(instructions) {
   }
 
   instructions.forEach((instr, idx) => {
+    const a = () => getValue(instr.arg1);
+    const b = () => getValue(instr.arg2);
     switch (instr.op) {
-      case 'ASSIGN':
-        memory.set(instr.result, getValue(instr.arg1));
-        break;
-      case 'ADD':
-        memory.set(instr.result, getValue(instr.arg1) + getValue(instr.arg2));
-        break;
-      case 'SUB':
-        memory.set(instr.result, getValue(instr.arg1) - getValue(instr.arg2));
-        break;
-      case 'MUL':
-        memory.set(instr.result, getValue(instr.arg1) * getValue(instr.arg2));
-        break;
-      case 'DIV': {
-        const d = getValue(instr.arg2);
-        memory.set(instr.result, d !== 0 ? Math.trunc(getValue(instr.arg1) / d) : 0);
-        break;
-      }
-      case 'PRINT':
-        output.push(getValue(instr.arg1));
-        break;
+      case 'ASSIGN': memory.set(instr.result, a()); break;
+      case 'ADD':    memory.set(instr.result, a() + b()); break;
+      case 'SUB':    memory.set(instr.result, a() - b()); break;
+      case 'MUL':    memory.set(instr.result, a() * b()); break;
+      case 'DIV':    { const d = b(); memory.set(instr.result, d !== 0 ? Math.trunc(a() / d) : 0); break; }
+      case 'MOD':    { const d = b(); memory.set(instr.result, d !== 0 ? a() % d : 0); break; }
+      case 'BAND':   memory.set(instr.result, (a() & b()) | 0); break;
+      case 'BOR':    memory.set(instr.result, (a() | b()) | 0); break;
+      case 'BXOR':   memory.set(instr.result, (a() ^ b()) | 0); break;
+      case 'BNOT':   memory.set(instr.result, (~a()) | 0); break;
+      case 'SHL':    memory.set(instr.result, (a() << b()) | 0); break;
+      case 'SHR':    memory.set(instr.result, (a() >> b()) | 0); break;
+      case 'AND':    memory.set(instr.result, (a() !== 0 && b() !== 0) ? 1 : 0); break;
+      case 'OR':     memory.set(instr.result, (a() !== 0 || b() !== 0) ? 1 : 0); break;
+      case 'EQ':     memory.set(instr.result, a() === b() ? 1 : 0); break;
+      case 'NE':     memory.set(instr.result, a() !== b() ? 1 : 0); break;
+      case 'LT':     memory.set(instr.result, a() < b() ? 1 : 0); break;
+      case 'GT':     memory.set(instr.result, a() > b() ? 1 : 0); break;
+      case 'LE':     memory.set(instr.result, a() <= b() ? 1 : 0); break;
+      case 'GE':     memory.set(instr.result, a() >= b() ? 1 : 0); break;
+      case 'PRINT':  output.push(a()); break;
       case 'NOP':
-      default:
-        break;
+      default:       break;
     }
 
     memoryLogs.push({

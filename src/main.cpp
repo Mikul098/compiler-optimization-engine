@@ -74,9 +74,22 @@ int main(int argc, char** argv) {
             std::vector<TACInstruction> initialTAC = builder.getInstructions();
 
             PassManager manager;
+            // Pass 7: Constant Propagation - forward-propagate consts to expose more folding
+            manager.addPass(std::make_unique<ConstantPropagationPass>());
+            // Pass 1: Constant Folding - fold fully-constant expressions
             manager.addPass(std::make_unique<ConstantFoldingPass>());
+            // Pass 4: Algebraic Simplification & Strength Reduction
+            manager.addPass(std::make_unique<AlgebraicSimplificationPass>());
+            // Pass 5: Copy Propagation - eliminate unnecessary temporaries
+            manager.addPass(std::make_unique<CopyPropagationPass>());
+            // Pass 6: Redundant Assignment Elimination - remove x=x
+            manager.addPass(std::make_unique<RedundantAssignmentPass>());
+            // Pass 3: Common Subexpression Elimination
             manager.addPass(std::make_unique<CommonSubexpressionPass>());
+            // Pass 2: Dead Code Elimination - backward liveness analysis
             manager.addPass(std::make_unique<DeadCodeEliminationPass>());
+            // Pass 8: Peephole - local 2-instruction window micro-optimizations
+            manager.addPass(std::make_unique<PeepholePass>());
 
             manager.optimize(builder.getInstructions());
 

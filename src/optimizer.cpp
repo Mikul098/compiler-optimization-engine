@@ -124,8 +124,14 @@ void ConstantFoldingPass::optimize(std::vector<TACInstruction>& instructions) {
                 case OpCode::BAND: computedResult = val1 & val2; break;
                 case OpCode::BOR:  computedResult = val1 | val2; break;
                 case OpCode::BXOR: computedResult = val1 ^ val2; break;
-                case OpCode::SHL:  computedResult = val1 << val2; break;
-                case OpCode::SHR:  computedResult = val1 >> val2; break;
+                case OpCode::SHL:
+                    if (val2 >= 0 && val2 < 31) computedResult = val1 << val2;
+                    else divisionByZero = true;
+                    break;
+                case OpCode::SHR:
+                    if (val2 >= 0 && val2 < 32) computedResult = val1 >> val2;
+                    else divisionByZero = true;
+                    break;
                 case OpCode::EQ: computedResult = (val1 == val2) ? 1 : 0; break;
                 case OpCode::NE: computedResult = (val1 != val2) ? 1 : 0; break;
                 case OpCode::LT: computedResult = (val1 < val2) ? 1 : 0; break;
@@ -384,4 +390,448 @@ void PassManager::optimize(std::vector<TACInstruction>& instructions) {
             changed = true;
         }
     }
+}
+
+// =============================================================================
+// Pass 4: Algebraic Simplification & Strength Reduction
+// Applies well-known algebraic identities and replaces expensive ops with
+// cheaper equivalents (e.g. multiply-by-2 → left shift by 1).
+// =============================================================================
+void AlgebraicSimplificationPass::optimize(std::vector<TACInstruction>& instructions) {
+    for (auto& instr : instructions) {
+        // ---- MUL identities ----
+        if (instr.op == OpCode::MUL) {
+            // x * 0 = 0
+            if (instr.arg2 == "0" || instr.arg1 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+            // x * 1 = x
+            if (instr.arg2 == "1") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            if (instr.arg1 == "1") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "";
+                continue;
+            }
+            // x * 2 = x << 1  (strength reduction)
+            if (instr.arg2 == "2" && !isNumber(instr.arg1)) {
+                instr.op   = OpCode::SHL;
+                instr.arg2 = "1";
+                continue;
+            }
+            if (instr.arg1 == "2" && !isNumber(instr.arg2)) {
+                instr.op   = OpCode::SHL;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "1";
+                continue;
+            }
+            // x * 4 = x << 2
+            if (instr.arg2 == "4" && !isNumber(instr.arg1)) {
+                instr.op   = OpCode::SHL;
+                instr.arg2 = "2";
+                continue;
+            }
+            if (instr.arg1 == "4" && !isNumber(instr.arg2)) {
+                instr.op   = OpCode::SHL;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "2";
+                continue;
+            }
+            // x * 8 = x << 3
+            if (instr.arg2 == "8" && !isNumber(instr.arg1)) {
+                instr.op   = OpCode::SHL;
+                instr.arg2 = "3";
+                continue;
+            }
+            if (instr.arg1 == "8" && !isNumber(instr.arg2)) {
+                instr.op   = OpCode::SHL;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "3";
+                continue;
+            }
+        }
+
+        // ---- ADD identities ----
+        if (instr.op == OpCode::ADD) {
+            // x + 0 = x
+            if (instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            if (instr.arg1 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- SUB identities ----
+        if (instr.op == OpCode::SUB) {
+            // x - 0 = x
+            if (instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            // x - x = 0  (same variable)
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- DIV identities ----
+        if (instr.op == OpCode::DIV) {
+            // x / 1 = x
+            if (instr.arg2 == "1") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            // x / x = 1  (same non-zero variable — safe at compile time)
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "1";
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- MOD identities ----
+        if (instr.op == OpCode::MOD) {
+            // x % 1 = 0
+            if (instr.arg2 == "1") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+            // x % x = 0
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- Bitwise identities ----
+        if (instr.op == OpCode::BAND) {
+            // x & 0 = 0
+            if (instr.arg1 == "0" || instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+            // x & x = x
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        if (instr.op == OpCode::BOR) {
+            // x | 0 = x
+            if (instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            if (instr.arg1 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "";
+                continue;
+            }
+            // x | x = x
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        if (instr.op == OpCode::BXOR) {
+            // x ^ x = 0
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+            // x ^ 0 = x
+            if (instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+            if (instr.arg1 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = instr.arg2;
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- Shift identities ----
+        if (instr.op == OpCode::SHL || instr.op == OpCode::SHR) {
+            // x << 0 = x,  x >> 0 = x
+            if (instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- Logical identities ----
+        if (instr.op == OpCode::AND) {
+            // x && 0 = 0
+            if (instr.arg1 == "0" || instr.arg2 == "0") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "0";
+                instr.arg2 = "";
+                continue;
+            }
+        }
+        if (instr.op == OpCode::OR) {
+            // x || 1 = 1
+            if (instr.arg1 == "1" || instr.arg2 == "1") {
+                instr.op   = OpCode::ASSIGN;
+                instr.arg1 = "1";
+                instr.arg2 = "";
+                continue;
+            }
+        }
+
+        // ---- Comparison identities ----
+        // x == x → 1,  x != x → 0
+        if (instr.op == OpCode::EQ && !instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+            instr.op   = OpCode::ASSIGN;
+            instr.arg1 = "1";
+            instr.arg2 = "";
+            continue;
+        }
+        if (instr.op == OpCode::NE && !instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+            instr.op   = OpCode::ASSIGN;
+            instr.arg1 = "0";
+            instr.arg2 = "";
+            continue;
+        }
+        // x < x → 0,  x > x → 0,  x <= x → 1,  x >= x → 1
+        if ((instr.op == OpCode::LT || instr.op == OpCode::GT) &&
+            !instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+            instr.op   = OpCode::ASSIGN;
+            instr.arg1 = "0";
+            instr.arg2 = "";
+            continue;
+        }
+        if ((instr.op == OpCode::LE || instr.op == OpCode::GE) &&
+            !instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg1 == instr.arg2) {
+            instr.op   = OpCode::ASSIGN;
+            instr.arg1 = "1";
+            instr.arg2 = "";
+            continue;
+        }
+    }
+}
+
+// =============================================================================
+// Pass 5: Copy Propagation
+// Tracks ASSIGN instructions of the form  dst = src  where src is a variable
+// and propagates src into later operands that use dst.
+// Invalidated when dst or src is redefined.
+// =============================================================================
+void CopyPropagationPass::optimize(std::vector<TACInstruction>& instructions) {
+    // copy_map[var] = value it was copied from (a variable name, not a number)
+    std::unordered_map<std::string, std::string> copyMap;
+
+    for (auto& instr : instructions) {
+        // Labels mark control-flow joins — conservative: clear all copies
+        if (instr.op == OpCode::LABEL) {
+            copyMap.clear();
+            continue;
+        }
+
+        // Propagate known copies into arg1 and arg2
+        auto applyProp = [&](std::string& arg) {
+            if (!arg.empty() && !isNumber(arg)) {
+                auto it = copyMap.find(arg);
+                if (it != copyMap.end()) {
+                    arg = it->second;
+                }
+            }
+        };
+        applyProp(instr.arg1);
+        applyProp(instr.arg2);
+
+        // Record new copy or invalidate
+        if (instr.op == OpCode::ASSIGN && !instr.result.empty()) {
+            // Invalidate any copy whose source was overwritten
+            for (auto it = copyMap.begin(); it != copyMap.end(); ) {
+                if (it->second == instr.result || it->first == instr.result) {
+                    it = copyMap.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            // If RHS is a plain variable (not a number), record the copy
+            if (!instr.arg1.empty() && !isNumber(instr.arg1) && instr.arg2.empty()) {
+                copyMap[instr.result] = instr.arg1;
+            }
+        } else if (!instr.result.empty()) {
+            // Any other defining instruction invalidates copies of this var
+            for (auto it = copyMap.begin(); it != copyMap.end(); ) {
+                if (it->first == instr.result || it->second == instr.result) {
+                    it = copyMap.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Pass 6: Redundant Assignment Elimination
+// Removes instructions of the form   x = x   (self-assignments that are NOPs).
+// =============================================================================
+void RedundantAssignmentPass::optimize(std::vector<TACInstruction>& instructions) {
+    for (auto& instr : instructions) {
+        if (instr.op == OpCode::ASSIGN &&
+            !instr.result.empty() &&
+            instr.arg2.empty() &&
+            instr.arg1 == instr.result) {
+            instr.op     = OpCode::NOP;
+            instr.arg1   = "";
+            instr.arg2   = "";
+            instr.result = "";
+        }
+    }
+    instructions.erase(
+        std::remove_if(instructions.begin(), instructions.end(),
+                       [](const TACInstruction& i) { return i.op == OpCode::NOP; }),
+        instructions.end()
+    );
+}
+
+// =============================================================================
+// Pass 7: Constant Propagation (cross-block forward pass)
+// Unlike ConstantFoldingPass (which only folds when BOTH operands are already
+// numeric literals in the TAC), this pass tracks all variables whose current
+// value is a compile-time constant and substitutes them across the entire
+// instruction stream.  Label boundaries conservatively flush the map.
+// Running this pass before ConstantFoldingPass enables the folder to collapse
+// more expressions on the subsequent iteration.
+// =============================================================================
+void ConstantPropagationPass::optimize(std::vector<TACInstruction>& instructions) {
+    std::unordered_map<std::string, int> constMap; // var -> constant value
+
+    for (auto& instr : instructions) {
+        if (instr.op == OpCode::LABEL) {
+            constMap.clear();
+            continue;
+        }
+
+        // Substitute known constants into operands
+        auto substitute = [&](std::string& arg) {
+            if (!arg.empty() && !isNumber(arg)) {
+                auto it = constMap.find(arg);
+                if (it != constMap.end()) {
+                    arg = std::to_string(it->second);
+                }
+            }
+        };
+        substitute(instr.arg1);
+        substitute(instr.arg2);
+
+        // Update the constant map based on what this instruction defines
+        if (!instr.result.empty()) {
+            if (instr.op == OpCode::ASSIGN && isNumber(instr.arg1) && instr.arg2.empty()) {
+                constMap[instr.result] = std::stoi(instr.arg1);
+            } else {
+                constMap.erase(instr.result);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Pass 8: Peephole Optimization
+// Slides a 2-instruction window looking for local patterns:
+//   Pattern A — redundant temporary copy collapse:
+//       t1 = <expr>   followed by   dst = t1
+//       becomes  dst = <expr>   (when t1 is a temp and used only once)
+//   Pattern B — double-negation: NOT(NOT(x)) = x
+//   Pattern C — double-assign: consecutive  x = v; x = v  (keep only one)
+// =============================================================================
+void PeepholePass::optimize(std::vector<TACInstruction>& instructions) {
+    // ----- Pattern A: collapse   tN = expr ; dst = tN  -----
+    // Count how many times each variable is used as an operand
+    std::unordered_map<std::string, int> useCount;
+    for (const auto& instr : instructions) {
+        if (!instr.arg1.empty() && !isNumber(instr.arg1)) useCount[instr.arg1]++;
+        if (!instr.arg2.empty() && !isNumber(instr.arg2)) useCount[instr.arg2]++;
+    }
+
+    for (size_t i = 0; i + 1 < instructions.size(); ++i) {
+        auto& curr = instructions[i];
+        auto& next = instructions[i + 1];
+
+        // Pattern A: curr defines a temp used exactly once, next copies it
+        bool currDefinesTemp =
+            !curr.result.empty() &&
+            curr.result.size() >= 2 &&
+            curr.result[0] == 't' &&
+            std::isdigit(static_cast<unsigned char>(curr.result[1]));
+
+        bool nextIsSimpleCopy =
+            next.op == OpCode::ASSIGN &&
+            next.arg1 == curr.result &&
+            next.arg2.empty();
+
+        if (currDefinesTemp && nextIsSimpleCopy && useCount[curr.result] == 1) {
+            // Re-target the defining instruction directly to next.result
+            curr.result = next.result;
+            next.op     = OpCode::NOP;
+            next.arg1   = "";
+            next.arg2   = "";
+            next.result = "";
+        }
+    }
+
+    // ----- Pattern C: consecutive identical assignments  x = v; x = v -----
+    for (size_t i = 0; i + 1 < instructions.size(); ++i) {
+        auto& curr = instructions[i];
+        auto& next = instructions[i + 1];
+
+        if (curr.op     == OpCode::ASSIGN &&
+            next.op     == OpCode::ASSIGN &&
+            curr.result == next.result    &&
+            curr.arg1   == next.arg1      &&
+            curr.arg2   == next.arg2) {
+            curr.op     = OpCode::NOP;
+            curr.arg1   = "";
+            curr.arg2   = "";
+            curr.result = "";
+        }
+    }
+
+    instructions.erase(
+        std::remove_if(instructions.begin(), instructions.end(),
+                       [](const TACInstruction& i) { return i.op == OpCode::NOP; }),
+        instructions.end()
+    );
 }
