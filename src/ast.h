@@ -9,15 +9,15 @@
  *      * StatementNode   : Abstract base for statements.
  *      * ExpressionNode  : Abstract base for value-evaluating expressions.
  *      * ProgramNode     : Root node holding a sequence of statements.
+ *      * BlockNode       : Scoped block of statements { ... }.
+ *      * IfNode          : Conditional branching (if ... else ...).
+ *      * WhileNode       : Loop construct (while ...).
+ *      * ForNode         : Loop construct (for ...).
  *      * AssignmentNode  : Variable assignment statement (e.g., x = expr;).
  *      * PrintNode       : Console print statement (e.g., print(expr);).
- *      * BinaryOpNode    : Binary arithmetic operations (+, -, *, /).
+ *      * BinaryOpNode    : Arithmetic and relational operations (+, -, *, /, ==, !=, <, >, <=, >=).
  *      * VariableNode    : Identifier/variable reference expression.
  *      * NumberNode      : Integer literal numeric expression.
- *  - Declares polymorphic interfaces for:
- *      * Terminal pretty-printing using ANSI colors and box-drawing glyphs.
- *      * HTML and JSON serialization for visualization.
- *      * Three-Address Code (TAC) intermediate generation via post-order traversal.
  * ==============================================================================
  */
 
@@ -77,6 +77,69 @@ public:
     void exportPNG(const std::string& filename) const;
 };
 
+// Scoped block of statements: { ... }
+class BlockNode : public StatementNode {
+public:
+    std::vector<std::unique_ptr<StatementNode>> statements;
+
+    void addStatement(std::unique_ptr<StatementNode> stmt) {
+        statements.push_back(std::move(stmt));
+    }
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Conditional branching: if (cond) thenBranch else elseBranch
+class IfNode : public StatementNode {
+public:
+    std::unique_ptr<ExpressionNode> condition;
+    std::unique_ptr<StatementNode> thenBranch;
+    std::unique_ptr<StatementNode> elseBranch;
+
+    IfNode(std::unique_ptr<ExpressionNode> cond, std::unique_ptr<StatementNode> thenB, std::unique_ptr<StatementNode> elseB = nullptr)
+        : condition(std::move(cond)), thenBranch(std::move(thenB)), elseBranch(std::move(elseB)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// While loop: while (cond) body
+class WhileNode : public StatementNode {
+public:
+    std::unique_ptr<ExpressionNode> condition;
+    std::unique_ptr<StatementNode> body;
+
+    WhileNode(std::unique_ptr<ExpressionNode> cond, std::unique_ptr<StatementNode> body)
+        : condition(std::move(cond)), body(std::move(body)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// For loop: for (init; cond; inc) body
+class ForNode : public StatementNode {
+public:
+    std::unique_ptr<StatementNode> init;
+    std::unique_ptr<ExpressionNode> condition;
+    std::unique_ptr<StatementNode> increment;
+    std::unique_ptr<StatementNode> body;
+
+    ForNode(std::unique_ptr<StatementNode> init, std::unique_ptr<ExpressionNode> cond, std::unique_ptr<StatementNode> inc, std::unique_ptr<StatementNode> body)
+        : init(std::move(init)), condition(std::move(cond)), increment(std::move(inc)), body(std::move(body)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
 // Variable assignment: e.g., x = 10;
 class AssignmentNode : public StatementNode {
 public:
@@ -108,13 +171,113 @@ public:
 
 // Supported binary operators
 enum class BinaryOp {
-    ADD,
-    SUB,
-    MUL,
-    DIV
+    ADD, SUB, MUL, DIV, MOD, AND, OR,
+    BAND, BOR, BXOR, SHL, SHR,
+    EQ, NE, LT, GT, LE, GE
 };
 
-// Binary arithmetic operation
+// Do-While loop: do body while (cond);
+class DoWhileNode : public StatementNode {
+public:
+    std::unique_ptr<StatementNode> body;
+    std::unique_ptr<ExpressionNode> condition;
+
+    DoWhileNode(std::unique_ptr<StatementNode> body, std::unique_ptr<ExpressionNode> cond)
+        : body(std::move(body)), condition(std::move(cond)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Break statement: break;
+class BreakNode : public StatementNode {
+public:
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Continue statement: continue;
+class ContinueNode : public StatementNode {
+public:
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Case label: case <value>:
+class CaseNode : public StatementNode {
+public:
+    int value;
+    mutable std::string label;
+
+    explicit CaseNode(int val) : value(val) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Default label: default:
+class DefaultNode : public StatementNode {
+public:
+    mutable std::string label;
+
+    DefaultNode() = default;
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Switch statement: switch (expr) body
+class SwitchNode : public StatementNode {
+public:
+    std::unique_ptr<ExpressionNode> expression;
+    std::unique_ptr<StatementNode> body;
+
+    SwitchNode(std::unique_ptr<ExpressionNode> expr, std::unique_ptr<StatementNode> body)
+        : expression(std::move(expr)), body(std::move(body)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Goto statement: goto label;
+class GotoNode : public StatementNode {
+public:
+    std::string labelName;
+
+    explicit GotoNode(std::string name) : labelName(std::move(name)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Label declaration: label:
+class LabelNode : public StatementNode {
+public:
+    std::string labelName;
+
+    explicit LabelNode(std::string name) : labelName(std::move(name)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Binary arithmetic / comparison operation
 class BinaryOpNode : public ExpressionNode {
 public:
     BinaryOp op;
@@ -149,6 +312,39 @@ public:
     int value;
 
     explicit NumberNode(int value) : value(value) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Ternary operator: condition ? thenExpr : elseExpr
+class TernaryNode : public ExpressionNode {
+public:
+    std::unique_ptr<ExpressionNode> condition;
+    std::unique_ptr<ExpressionNode> thenExpr;
+    std::unique_ptr<ExpressionNode> elseExpr;
+
+    TernaryNode(std::unique_ptr<ExpressionNode> cond,
+                std::unique_ptr<ExpressionNode> tExpr,
+                std::unique_ptr<ExpressionNode> eExpr)
+        : condition(std::move(cond)), thenExpr(std::move(tExpr)), elseExpr(std::move(eExpr)) {}
+
+    void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
+    void toHtml(std::ostream& out) const override;
+    void toJson(std::ostream& out, const std::string& edge = "") const override;
+    std::string generateTAC(TACBuilder& builder) const override;
+};
+
+// Function call: func(arg1, arg2, ...)
+class FunctionCallNode : public ExpressionNode {
+public:
+    std::string funcName;
+    std::vector<std::unique_ptr<ExpressionNode>> args;
+
+    FunctionCallNode(std::string name, std::vector<std::unique_ptr<ExpressionNode>> a)
+        : funcName(std::move(name)), args(std::move(a)) {}
 
     void print(const std::string& prefix = "", bool isLast = true, const std::string& label = "") const override;
     void toHtml(std::ostream& out) const override;

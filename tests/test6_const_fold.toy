@@ -1,0 +1,6 @@
+// The compiler should resolve all of this math without executing it.
+a = 10;
+b = 20;
+c = a * b;      // Should fold to 200
+d = c + 50;     // Should fold to 250
+print d;

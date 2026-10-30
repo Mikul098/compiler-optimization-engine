@@ -1,0 +1,6 @@
+// Testing basic CSE and commutativity
+x = b * c;
+y = a + x;
+z = c * b;      // Should be recognized as identical to 'x'
+final = a + z;  // Should be recognized as identical to 'y'
+print final;
