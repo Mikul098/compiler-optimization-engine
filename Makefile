@@ -25,7 +25,7 @@ PARSER_CPP = $(SRC_DIR)/parser.tab.cpp
 PARSER_HPP = $(SRC_DIR)/parser.tab.hpp
 LEXER_CPP = $(SRC_DIR)/lexer.yy.cpp
 
-SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(SRC_DIR)/optimizer.cpp $(SRC_DIR)/diff.cpp $(SRC_DIR)/interpreter.cpp $(PARSER_CPP) $(LEXER_CPP)
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/ast.cpp $(SRC_DIR)/tac.cpp $(SRC_DIR)/optimizer.cpp $(SRC_DIR)/diff.cpp $(SRC_DIR)/interpreter.cpp $(SRC_DIR)/cfg.cpp $(SRC_DIR)/loop_opt.cpp $(SRC_DIR)/liveness.cpp $(SRC_DIR)/regalloc.cpp $(SRC_DIR)/codegen_x86.cpp $(PARSER_CPP) $(LEXER_CPP)
 OBJS = $(SRCS:.cpp=.o)
 
 TARGET = $(BIN_DIR)/compiler

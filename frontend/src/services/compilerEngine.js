@@ -1222,11 +1222,392 @@ export function executeTAC(instructions) {
   };
 }
 
-// Complete Full Pipeline Runner
+// ==============================================================================
+// Control Flow Graph (CFG) Construction & Dominator Analysis
+// ==============================================================================
+export function buildCFG(instructions) {
+  if (!instructions || instructions.length === 0) return { blocks: [], loops: [] };
+
+  const isLeader = new Array(instructions.length).fill(false);
+  isLeader[0] = true;
+
+  instructions.forEach((instr, idx) => {
+    if (instr.op === 'LABEL') {
+      isLeader[idx] = true;
+    }
+    if (instr.op === 'GOTO' || instr.op === 'IF_ZERO' || instr.op === 'IF_NOT_ZERO') {
+      if (idx + 1 < instructions.length) {
+        isLeader[idx + 1] = true;
+      }
+    }
+  });
+
+  const blocks = [];
+  const labelToBlock = new Map();
+  let currentBlock = { id: 0, label: '', instructions: [], preds: [], succs: [], dominators: [] };
+
+  instructions.forEach((instr, idx) => {
+    if (isLeader[idx] && idx > 0) {
+      if (currentBlock.instructions.length > 0) {
+        blocks.push(currentBlock);
+        currentBlock = { id: blocks.length, label: '', instructions: [], preds: [], succs: [], dominators: [] };
+      }
+    }
+    if (instr.op === 'LABEL') {
+      currentBlock.label = instr.arg1;
+      labelToBlock.set(instr.arg1, currentBlock.id);
+    }
+    currentBlock.instructions.push(instr);
+  });
+
+  if (currentBlock.instructions.length > 0) {
+    blocks.push(currentBlock);
+  }
+
+  // Connect edges
+  blocks.forEach((blk, bIdx) => {
+    if (blk.instructions.length === 0) return;
+    const last = blk.instructions[blk.instructions.length - 1];
+
+    if (last.op === 'GOTO') {
+      const target = labelToBlock.get(last.arg1);
+      if (target !== undefined) {
+        blk.succs.push(target);
+        blocks[target].preds.push(bIdx);
+      }
+    } else if (last.op === 'IF_ZERO' || last.op === 'IF_NOT_ZERO') {
+      const target = labelToBlock.get(last.arg2);
+      if (target !== undefined) {
+        blk.succs.push(target);
+        blocks[target].preds.push(bIdx);
+      }
+      if (bIdx + 1 < blocks.length) {
+        blk.succs.push(bIdx + 1);
+        blocks[bIdx + 1].preds.push(bIdx);
+      }
+    } else {
+      if (bIdx + 1 < blocks.length) {
+        blk.succs.push(bIdx + 1);
+        blocks[bIdx + 1].preds.push(bIdx);
+      }
+    }
+  });
+
+  // Dominator Analysis
+  if (blocks.length > 0) {
+    const all = blocks.map(b => b.id);
+    blocks[0].dominators = [0];
+    for (let i = 1; i < blocks.length; i++) {
+      blocks[i].dominators = [...all];
+    }
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 1; i < blocks.length; i++) {
+        const blk = blocks[i];
+        if (blk.preds.length === 0) continue;
+        let intersect = [...blocks[blk.preds[0]].dominators];
+        for (let p = 1; p < blk.preds.length; p++) {
+          const pDom = new Set(blocks[blk.preds[p]].dominators);
+          intersect = intersect.filter(d => pDom.has(d));
+        }
+        intersect.push(i);
+        const unique = Array.from(new Set(intersect)).sort((a,b) => a-b);
+        if (JSON.stringify(unique) !== JSON.stringify(blk.dominators)) {
+          blk.dominators = unique;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // Natural Loops
+  const loops = [];
+  blocks.forEach(blk => {
+    blk.succs.forEach(succ => {
+      if (blk.dominators.includes(succ)) {
+        loops.push({ header: succ, latch: blk.id });
+      }
+    });
+  });
+
+  return { blocks, loops };
+}
+
+// ==============================================================================
+// Chaitin-Briggs Graph Coloring Register Allocation
+// ==============================================================================
+export function allocateRegistersChaitin(instructions, k = 6) {
+  const physicalRegs = ['rbx', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15', 'rsi', 'rdi'].slice(0, k);
+
+  const isVar = (str) => {
+    if (!str || typeof str !== 'string') return false;
+    if (/^-?\d+$/.test(str)) return false;
+    return true;
+  };
+
+  const allVars = new Set();
+  const uses = instructions.map(ins => {
+    const s = new Set();
+    if (ins.op !== 'LABEL' && ins.op !== 'GOTO') {
+      if (isVar(ins.arg1)) { s.add(ins.arg1); allVars.add(ins.arg1); }
+      if (isVar(ins.arg2)) { s.add(ins.arg2); allVars.add(ins.arg2); }
+    }
+    return s;
+  });
+
+  const defs = instructions.map(ins => {
+    const s = new Set();
+    if (ins.result && isVar(ins.result)) { s.add(ins.result); allVars.add(ins.result); }
+    return s;
+  });
+
+  // Backward liveness
+  const liveOut = instructions.map(() => new Set());
+  const liveIn = instructions.map(() => new Set());
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = instructions.length - 1; i >= 0; i--) {
+      const succs = (i + 1 < instructions.length) ? [i + 1] : [];
+      const newLiveOut = new Set();
+      succs.forEach(s => liveIn[s].forEach(v => newLiveOut.add(v)));
+
+      const newLiveIn = new Set(uses[i]);
+      newLiveOut.forEach(v => {
+        if (!defs[i].has(v)) newLiveIn.add(v);
+      });
+
+      if (newLiveIn.size !== liveIn[i].size || newLiveOut.size !== liveOut[i].size) {
+        liveIn[i] = newLiveIn;
+        liveOut[i] = newLiveOut;
+        changed = true;
+      }
+    }
+  }
+
+  // Interference Graph
+  const interference = new Map();
+  allVars.forEach(v => interference.set(v, new Set()));
+
+  instructions.forEach((ins, idx) => {
+    if (ins.result && isVar(ins.result)) {
+      liveOut[idx].forEach(live => {
+        if (live !== ins.result) {
+          interference.get(ins.result)?.add(live);
+          interference.get(live)?.add(ins.result);
+        }
+      });
+    }
+  });
+
+  // Simplify & Spill
+  const graphCopy = new Map();
+  interference.forEach((neighbors, v) => graphCopy.set(v, new Set(neighbors)));
+
+  const selectStack = [];
+  while (graphCopy.size > 0) {
+    let candidate = null;
+    for (const [node, neighbors] of graphCopy.entries()) {
+      if (neighbors.size < k) {
+        candidate = node;
+        break;
+      }
+    }
+
+    if (candidate) {
+      selectStack.push({ varName: candidate, isSpill: false });
+      const nbs = graphCopy.get(candidate);
+      nbs.forEach(n => graphCopy.get(n)?.delete(candidate));
+      graphCopy.delete(candidate);
+    } else {
+      // Pick highest degree as spill candidate
+      let maxDeg = -1;
+      let spillNode = null;
+      for (const [node, neighbors] of graphCopy.entries()) {
+        if (neighbors.size > maxDeg) {
+          maxDeg = neighbors.size;
+          spillNode = node;
+        }
+      }
+      selectStack.push({ varName: spillNode, isSpill: true });
+      const nbs = graphCopy.get(spillNode);
+      nbs.forEach(n => graphCopy.get(n)?.delete(spillNode));
+      graphCopy.delete(spillNode);
+    }
+  }
+
+  // Select Colors
+  const registerMap = {};
+  const stackSpills = {};
+  let spillOffset = -8;
+  let spillCount = 0;
+
+  while (selectStack.length > 0) {
+    const { varName } = selectStack.pop();
+    const neighborColors = new Set();
+    const neighbors = interference.get(varName) || new Set();
+    neighbors.forEach(n => {
+      if (registerMap[n]) neighborColors.add(registerMap[n]);
+    });
+
+    const freeReg = physicalRegs.find(r => !neighborColors.has(r));
+    if (freeReg) {
+      registerMap[varName] = freeReg;
+    } else {
+      stackSpills[varName] = spillOffset;
+      spillOffset -= 8;
+      spillCount++;
+    }
+  }
+
+  const stackBytes = Math.ceil((Math.abs(spillOffset) + 32) / 16) * 16;
+  return {
+    registerMap,
+    stackSpills,
+    spillCount,
+    stackFrameBytes: stackBytes,
+    kRegisters: k,
+    interferenceList: Array.from(interference.entries()).map(([v, n]) => ({ var: v, neighbors: Array.from(n) }))
+  };
+}
+
+// ==============================================================================
+// Target x86-64 Machine Code Generator (Intel Syntax)
+// ==============================================================================
+export function generateX86Assembly(instructions, regAlloc) {
+  const lines = [];
+  lines.push('.intel_syntax noprefix');
+  lines.push('.globl main');
+  lines.push('.def main; .scl 2; .type 32; .endef');
+  lines.push('.text');
+  lines.push('main:');
+  lines.push('    push rbp');
+  lines.push('    mov rbp, rsp');
+  const frame = regAlloc?.stackFrameBytes || 48;
+  lines.push(`    sub rsp, ${frame}`);
+
+  const getOp = (arg, fallback = 'rax') => {
+    if (!arg) return '0';
+    if (/^-?\d+$/.test(arg)) return arg;
+    if (regAlloc?.registerMap?.[arg]) return regAlloc.registerMap[arg];
+    if (regAlloc?.stackSpills?.[arg]) {
+      const off = regAlloc.stackSpills[arg];
+      lines.push(`    mov ${fallback}, QWORD PTR [rbp - ${Math.abs(off)}]`);
+      return fallback;
+    }
+    return fallback;
+  };
+
+  const emitStore = (res, srcReg) => {
+    if (!res) return;
+    if (regAlloc?.registerMap?.[res]) {
+      if (regAlloc.registerMap[res] !== srcReg) {
+        lines.push(`    mov ${regAlloc.registerMap[res]}, ${srcReg}`);
+      }
+      return;
+    }
+    if (regAlloc?.stackSpills?.[res]) {
+      const off = regAlloc.stackSpills[res];
+      lines.push(`    mov QWORD PTR [rbp - ${Math.abs(off)}], ${srcReg}`);
+    }
+  };
+
+  instructions.forEach(ins => {
+    switch (ins.op) {
+      case 'ASSIGN': {
+        const op1 = getOp(ins.arg1, 'rax');
+        emitStore(ins.result, op1);
+        break;
+      }
+      case 'ADD': {
+        const op1 = getOp(ins.arg1, 'rax');
+        const op2 = getOp(ins.arg2, 'rcx');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push(`    add rax, ${op2}`);
+        emitStore(ins.result, 'rax');
+        break;
+      }
+      case 'SUB': {
+        const op1 = getOp(ins.arg1, 'rax');
+        const op2 = getOp(ins.arg2, 'rcx');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push(`    sub rax, ${op2}`);
+        emitStore(ins.result, 'rax');
+        break;
+      }
+      case 'MUL': {
+        const op1 = getOp(ins.arg1, 'rax');
+        const op2 = getOp(ins.arg2, 'rcx');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push(`    imul rax, ${op2}`);
+        emitStore(ins.result, 'rax');
+        break;
+      }
+      case 'DIV': {
+        const op1 = getOp(ins.arg1, 'rax');
+        const op2 = getOp(ins.arg2, 'rcx');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push('    cqo');
+        lines.push(`    mov r11, ${op2}`);
+        lines.push('    idiv r11');
+        emitStore(ins.result, 'rax');
+        break;
+      }
+      case 'MOD': {
+        const op1 = getOp(ins.arg1, 'rax');
+        const op2 = getOp(ins.arg2, 'rcx');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push('    cqo');
+        lines.push(`    mov r11, ${op2}`);
+        lines.push('    idiv r11');
+        emitStore(ins.result, 'rdx');
+        break;
+      }
+      case 'PRINT': {
+        const op1 = getOp(ins.arg1, 'rdx');
+        lines.push('    sub rsp, 32');
+        lines.push('    lea rcx, [rip + fmt_int]');
+        lines.push(`    mov rdx, ${op1}`);
+        lines.push('    call printf');
+        lines.push('    add rsp, 32');
+        break;
+      }
+      case 'LABEL':
+        lines.push(`${ins.arg1}:`);
+        break;
+      case 'GOTO':
+        lines.push(`    jmp ${ins.arg1}`);
+        break;
+      case 'IF_ZERO': {
+        const op1 = getOp(ins.arg1, 'rax');
+        lines.push(`    mov rax, ${op1}`);
+        lines.push('    cmp rax, 0');
+        lines.push(`    je ${ins.arg2}`);
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
+  lines.push('    mov eax, 0');
+  lines.push('    mov rsp, rbp');
+  lines.push('    pop rbp');
+  lines.push('    ret');
+  lines.push('');
+  lines.push('.section .rdata,"dr"');
+  lines.push('fmt_int:');
+  lines.push('    .asciz "%lld\\n"');
+
+  return lines.join('\n');
+}
+
+// Complete Full Pipeline Runner (100% Phase 3)
 export async function runFullPipeline(sourceCode) {
   const startTime = performance.now();
 
-  // Try calling native backend API first
   let nativeResult = null;
   try {
     const res = await fetch('/api/compile', {
@@ -1255,6 +1636,9 @@ export async function runFullPipeline(sourceCode) {
       diff: null,
       passHistory: [],
       verification: null,
+      cfg: null,
+      regAlloc: null,
+      x86Assembly: null,
       astImage: nativeResult?.astImage || null,
       nativeStdout: nativeResult?.stdout || null
     };
@@ -1264,6 +1648,11 @@ export async function runFullPipeline(sourceCode) {
   const initialTAC = generateTAC(statements);
   const { finalInstructions, totalIterations, history: passHistory } = runPassManager(initialTAC);
   const diff = computeDiff(initialTAC, finalInstructions);
+
+  // Advanced Phase 3 Backend Passes
+  const cfg = buildCFG(finalInstructions);
+  const regAlloc = allocateRegistersChaitin(finalInstructions, 6);
+  const x86Assembly = generateX86Assembly(finalInstructions, regAlloc);
 
   // Run Virtual Machine Interpreter on both versions
   const unoptimizedVM = executeTAC(initialTAC);
@@ -1282,6 +1671,9 @@ export async function runFullPipeline(sourceCode) {
     totalIterations,
     passHistory,
     diff,
+    cfg,
+    regAlloc,
+    x86Assembly,
     verification: {
       passed: isMatched,
       unoptimizedOutput: unoptimizedVM.output,

@@ -9,14 +9,23 @@ import PassInspector from './components/PassInspector';
 import ASTVisualizer from './components/ASTVisualizer';
 import VMConsole from './components/VMConsole';
 import BenchmarkTelemetry from './components/BenchmarkTelemetry';
+import AssemblyWorkbench from './components/AssemblyWorkbench';
 
 export default function App() {
-  const [theme, setTheme] = useState('light');
-  const [selectedSuiteId, setSelectedSuiteId] = useState('test11_final_boss');
-  const [code, setCode] = useState(TEST_SUITES[0].code);
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const initialSection = urlParams?.get('section') || 'all';
+  const initialTheme = urlParams?.get('theme') || 'light';
+  const initialSuiteId = urlParams?.get('suite') || 'test11_final_boss';
+
+  const [theme, setTheme] = useState(initialTheme);
+  const [selectedSuiteId, setSelectedSuiteId] = useState(initialSuiteId);
+  const [code, setCode] = useState(() => {
+    const found = TEST_SUITES.find(s => s.id === initialSuiteId);
+    return found ? found.code : TEST_SUITES[0].code;
+  });
   const [pipelineData, setPipelineData] = useState(null);
   const [isCompiling, setIsCompiling] = useState(false);
-  const [activeSection, setActiveSection] = useState('all');
+  const [activeSection, setActiveSection] = useState(initialSection);
 
   // Toggle Theme
   useEffect(() => {
@@ -38,11 +47,11 @@ export default function App() {
 
   // Load Initial Test Suite on Mount
   useEffect(() => {
-    const initialSuite = TEST_SUITES[0];
-    setCode(initialSuite.code);
-    setSelectedSuiteId(initialSuite.id);
-    executePipeline(initialSuite.code);
-  }, []);
+    const targetSuite = TEST_SUITES.find(s => s.id === initialSuiteId) || TEST_SUITES[0];
+    setCode(targetSuite.code);
+    setSelectedSuiteId(targetSuite.id);
+    executePipeline(targetSuite.code);
+  }, [initialSuiteId]);
 
   function handleLoadSuite(suite) {
     setSelectedSuiteId(suite.id);
@@ -139,6 +148,12 @@ export default function App() {
           onClick={() => setActiveSection('telemetry')}
         >
           7. Benchmark Telemetry
+        </button>
+        <button
+          className={`nav-tab-btn ${activeSection === 'codegen' ? 'active' : ''}`}
+          onClick={() => setActiveSection('codegen')}
+        >
+          <Cpu size={13} /> 8. Target x86-64 Codegen
         </button>
       </nav>
 
@@ -252,6 +267,18 @@ export default function App() {
             onLoadTest={handleLoadSuite}
             currentTestId={selectedSuiteId}
           />
+        </section>
+      )}
+
+      {/* Section 8: Target x86-64 Machine Code Generation & Register Allocation */}
+      {(activeSection === 'all' || activeSection === 'codegen') && (
+        <section id="codegen">
+          <div className="section-header-block">
+            <span className="section-num">8.</span>
+            <h2 className="section-title">TARGET x86-64 MACHINE CODE GENERATION &amp; REGISTER ALLOCATION</h2>
+            <div className="section-line" />
+          </div>
+          <AssemblyWorkbench pipelineData={pipelineData} />
         </section>
       )}
 
